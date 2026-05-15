@@ -40,8 +40,12 @@ pub fn install_claude_code() -> Result<String, String> {
 
     let mut settings: serde_json::Value = if settings_path.exists() {
         let backup = settings_path.with_extension("json.moyuguard.bak");
-        std::fs::copy(&settings_path, &backup)
-            .map_err(|e| format!("Failed to backup settings: {}", e))?;
+        // Only create backup on first install; subsequent installs must not
+        // overwrite the original-config backup with the moyuguard-modified one.
+        if !backup.exists() {
+            std::fs::copy(&settings_path, &backup)
+                .map_err(|e| format!("Failed to backup settings: {}", e))?;
+        }
 
         let content = std::fs::read_to_string(&settings_path)
             .map_err(|e| format!("Failed to read settings.json: {}", e))?;
@@ -100,7 +104,9 @@ pub fn install_codex() -> Result<String, String> {
 
     let mut hooks: serde_json::Value = if hooks_path.exists() {
         let backup = hooks_path.with_extension("json.moyuguard.bak");
-        std::fs::copy(&hooks_path, &backup).ok();
+        if !backup.exists() {
+            std::fs::copy(&hooks_path, &backup).ok();
+        }
 
         let content = std::fs::read_to_string(&hooks_path).unwrap_or_default();
         serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
@@ -146,13 +152,23 @@ pub fn install_codex() -> Result<String, String> {
 pub fn uninstall_all() -> Result<String, String> {
     let mut results = Vec::new();
 
-    // Claude Code
+    // Claude Code: prefer restoring from backup so previously-installed hooks
+    // (e.g. CodeIsland) come back intact. Fall back to key-removal if no backup.
     let settings_path = dirs::home_dir()
         .unwrap_or_default()
         .join(".claude")
         .join("settings.json");
+    let claude_backup = settings_path.with_extension("json.moyuguard.bak");
 
-    if settings_path.exists() {
+    if claude_backup.exists() {
+        match std::fs::copy(&claude_backup, &settings_path) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&claude_backup);
+                results.push("Claude Code: restored settings.json from backup".to_string());
+            }
+            Err(e) => results.push(format!("Claude Code: failed to restore backup - {}", e)),
+        }
+    } else if settings_path.exists() {
         match std::fs::read_to_string(&settings_path) {
             Ok(content) => {
                 if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -180,13 +196,22 @@ pub fn uninstall_all() -> Result<String, String> {
         }
     }
 
-    // Codex
+    // Codex: same backup-first strategy
     let codex_home = std::env::var("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".codex"));
     let hooks_path = codex_home.join("hooks.json");
+    let codex_backup = hooks_path.with_extension("json.moyuguard.bak");
 
-    if hooks_path.exists() {
+    if codex_backup.exists() {
+        match std::fs::copy(&codex_backup, &hooks_path) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&codex_backup);
+                results.push("Codex: restored hooks.json from backup".to_string());
+            }
+            Err(e) => results.push(format!("Codex: failed to restore backup - {}", e)),
+        }
+    } else if hooks_path.exists() {
         match std::fs::read_to_string(&hooks_path) {
             Ok(content) => {
                 if let Ok(mut hooks) = serde_json::from_str::<serde_json::Value>(&content) {
