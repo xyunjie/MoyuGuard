@@ -111,7 +111,18 @@ async fn handle_connection(
 
     match event.event_name.as_str() {
         "PreToolUse" => {
-            handle_pre_tool_use(stream, event, auth_manager, ws_server, app_handle).await?;
+            // Telemetry only — Claude Code caches PreToolUse hooks at session
+            // start so we can't depend on this for blocking decisions. Just
+            // record it for the UI and let the call through.
+            notify_event(&event, &app_handle);
+            stream.write_all(b"{}").await?;
+            stream.shutdown().await?;
+        }
+        "PermissionRequest" => {
+            // The real blocking decision point — Claude Code re-reads
+            // settings.json live for this event, so even sessions started
+            // before we installed get caught.
+            handle_permission_request(stream, event, auth_manager, ws_server, app_handle).await?;
         }
         _ => {
             notify_event(&event, &app_handle);
@@ -123,7 +134,7 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn handle_pre_tool_use(
+async fn handle_permission_request(
     mut stream: tokio::net::UnixStream,
     event: HookEvent,
     auth_manager: Arc<AuthManager>,
@@ -156,7 +167,7 @@ async fn handle_pre_tool_use(
         summary,
         files,
         raw_command,
-        timeout_seconds: 120,
+        timeout_seconds: 3600,
     };
 
     let envelope = Envelope {
@@ -203,17 +214,37 @@ async fn handle_pre_tool_use(
             let decision = Decision::try_from(resp.decision).unwrap_or(Decision::Unspecified);
             match decision {
                 Decision::Approved => {
-                    info!("Hook approved: {}", request_id);
-                    serde_json::json!({})
+                    info!("PermissionRequest approved: {}", request_id);
+                    serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PermissionRequest",
+                            "decision": { "behavior": "allow" }
+                        }
+                    })
                 }
                 Decision::Rejected | Decision::Timeout => {
-                    info!("Hook denied/timeout: {}", request_id);
-                    serde_json::json!({"decision": {"behavior": "deny"}})
+                    info!("PermissionRequest denied/timeout: {}", request_id);
+                    serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PermissionRequest",
+                            "decision": { "behavior": "deny" }
+                        }
+                    })
                 }
-                _ => serde_json::json!({})
+                _ => serde_json::json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PermissionRequest",
+                        "decision": { "behavior": "deny" }
+                    }
+                })
             }
         }
-        None => serde_json::json!({"decision": {"behavior": "deny"}}),
+        None => serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": { "behavior": "deny" }
+            }
+        }),
     };
 
     let reply_bytes = serde_json::to_vec(&reply)?;

@@ -1,7 +1,9 @@
 #!/bin/bash
-# MoyuGuard Hook Script v1
+# MoyuGuard Hook Script v2
 # Reads CLI hook stdin JSON, sends to MoyuGuard desktop via Unix Socket.
-# For PreToolUse events, blocks until phone approval/denial.
+# Blocks on PermissionRequest (Claude Code re-reads settings.json for this
+# event live, so it works in already-running sessions) and forwards the
+# desktop's response to the CLI tool. All other events are fire-and-forget.
 
 SOCKET_PATH="/tmp/moyuguard-$(id -u).sock"
 
@@ -17,11 +19,20 @@ if [ ! -S "$SOCKET_PATH" ]; then
   exit 0
 fi
 
-EVENT_NAME=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('event_name',''))" 2>/dev/null)
+EVENT_NAME=$(echo "$INPUT" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('event_name') or d.get('hook_event_name') or '')
+except Exception:
+    print('')
+" 2>/dev/null)
 
 case "$EVENT_NAME" in
-  PreToolUse|UserPromptSubmit)
-    RESPONSE=$(echo "$INPUT" | nc -U -w 120 "$SOCKET_PATH" 2>/dev/null)
+  PermissionRequest)
+    # Wait up to 24h for user decision. The desktop responds with the
+    # Claude Code-specific permission shape: hookSpecificOutput.decision.behavior
+    RESPONSE=$(echo "$INPUT" | nc -U -w 86400 "$SOCKET_PATH" 2>/dev/null)
     if [ -n "$RESPONSE" ]; then
       echo "$RESPONSE"
     else

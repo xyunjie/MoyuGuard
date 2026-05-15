@@ -67,16 +67,30 @@ pub fn install_claude_code() -> Result<String, String> {
     let hook_obj = hooks.as_object_mut()
         .ok_or("hooks is not an object")?;
 
-    let blocking_events = vec!["PreToolUse"];
-    let fire_and_forget_events = vec!["PostToolUse", "Notification", "Stop", "SessionStart", "SessionEnd"];
+    // PermissionRequest is the real blocking decision event Claude Code fires
+    // when it needs user approval. Unlike PreToolUse it is re-read from
+    // settings.json live, so adding it works in already-running sessions.
+    // 86400s = 24h timeout matches what other CLI guards (CodeIsland) use.
+    let blocking_events = vec![("PermissionRequest", 86400u32)];
+    // PreToolUse fires before every tool call but Claude Code caches its hook
+    // config at session start. We keep it as fire-and-forget telemetry — the
+    // real decision happens on PermissionRequest.
+    let fire_and_forget_events = vec![
+        ("PreToolUse", 5u32),
+        ("PostToolUse", 5),
+        ("Notification", 5),
+        ("Stop", 5),
+        ("SessionStart", 5),
+        ("SessionEnd", 5),
+    ];
 
-    for event in &blocking_events {
-        let entry = make_hook_entry(&hook_cmd, 120);
+    for (event, timeout) in &blocking_events {
+        let entry = make_hook_entry(&hook_cmd, *timeout);
         hook_obj.insert(event.to_string(), entry);
     }
 
-    for event in &fire_and_forget_events {
-        let entry = make_hook_entry(&hook_cmd, 5);
+    for (event, timeout) in &fire_and_forget_events {
+        let entry = make_hook_entry(&hook_cmd, *timeout);
         hook_obj.insert(event.to_string(), entry);
     }
 
@@ -117,8 +131,17 @@ pub fn install_codex() -> Result<String, String> {
     let hook_obj = hooks.as_object_mut()
         .ok_or("hooks.json is not an object")?;
 
-    for event in &["PreToolUse", "PostToolUse", "Notification", "Stop"] {
-        let entry = make_codex_hook_entry(&hook_cmd, if *event == "PreToolUse" { 120 } else { 5 });
+    let codex_events: &[(&str, u32)] = &[
+        ("PermissionRequest", 86400),
+        ("PreToolUse", 5),
+        ("PostToolUse", 5),
+        ("Notification", 5),
+        ("Stop", 5),
+        ("SessionStart", 5),
+        ("SessionEnd", 5),
+    ];
+    for (event, timeout) in codex_events {
+        let entry = make_codex_hook_entry(&hook_cmd, *timeout);
         hook_obj.insert(event.to_string(), entry);
     }
 
