@@ -205,6 +205,22 @@ async fn handle_permission_request(
     });
     let _ = app_handle.emit("auth-request", &ui_event);
 
+    // Fire a native OS notification so the user sees a new request even
+    // when the main window is hidden in the tray.
+    use tauri_plugin_notification::NotificationExt;
+    let risk_emoji = match risk_name_str(request.risk_level) {
+        "critical" => "🚨",
+        "high" => "⚠️",
+        "medium" => "🔔",
+        _ => "📥",
+    };
+    let _ = app_handle
+        .notification()
+        .builder()
+        .title(format!("{} 待审批: {}", risk_emoji, request.tool_name))
+        .body(&request.summary)
+        .show();
+
     let mut rx = auth_manager.add_request(request).await;
 
     let response = rx.recv().await;

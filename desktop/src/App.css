@@ -713,13 +713,34 @@ button {
 }
 
 /* ───────── Auth Log ───────── */
+.auth-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
 .auth-log h2 {
   font-size: var(--text-md);
   font-weight: 600;
-  margin-bottom: var(--space-4);
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  margin: 0;
+}
+
+.log-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 .log-list {
@@ -730,14 +751,13 @@ button {
 
 .log-entry {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-left: 3px solid var(--text-tertiary);
   border-radius: var(--radius-md);
-  font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--text-secondary);
   animation: card-enter var(--duration-base) var(--ease-out);
@@ -759,6 +779,7 @@ button {
   justify-content: center;
   border-radius: var(--radius-sm);
   flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .log-entry.approved .log-icon {
@@ -771,14 +792,69 @@ button {
   color: var(--danger);
 }
 
+.log-entry.info .log-icon {
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+}
+
 .log-time {
   color: var(--text-tertiary);
   flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding-top: 2px;
+  white-space: nowrap;
 }
 
-.log-text {
+.log-body {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.log-headline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.log-tool {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   color: var(--text-primary);
+}
+
+.log-decision {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.log-decision-approved {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.log-decision-rejected {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.log-decision-info {
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+}
+
+.log-summary {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.5;
   word-break: break-all;
 }
 

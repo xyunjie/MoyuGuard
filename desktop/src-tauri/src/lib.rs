@@ -2,6 +2,7 @@ mod auth;
 mod hook_installer;
 mod hook_server;
 mod interceptor;
+mod log_store;
 mod mdns;
 mod proto;
 mod ws_server;
@@ -9,11 +10,16 @@ mod ws_server;
 use std::sync::Arc;
 use log::info;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::TrayIconBuilder,
+    AppHandle, Emitter, Manager, WindowEvent,
+};
 use tokio::sync::mpsc;
 
 use auth::AuthManager;
 use hook_server::HookServer;
+use log_store::{LogEntry, LogStore};
 use mdns::MdnsServer;
 use proto::proto::*;
 use ws_server::{IncomingMessage, WsServer};
@@ -23,6 +29,7 @@ const WS_PORT: u16 = 9876;
 struct AppState {
     ws_server: Arc<WsServer>,
     auth_manager: Arc<AuthManager>,
+    log_store: Arc<LogStore>,
 }
 
 #[derive(Serialize, Clone)]
@@ -74,6 +81,19 @@ fn risk_name(level: i32) -> &'static str {
     }
 }
 
+fn update_tray_tooltip(app: &AppHandle, pending: usize, connected: usize) {
+    let text = if pending > 0 {
+        format!("MoyuGuard · {} 个待审批 · {} 设备", pending, connected)
+    } else if connected > 0 {
+        format!("MoyuGuard · {} 台已连接", connected)
+    } else {
+        "MoyuGuard · 等待连接".to_string()
+    };
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(&text));
+    }
+}
+
 fn change_type_name(ct: i32) -> &'static str {
     match ChangeType::try_from(ct) {
         Ok(ChangeType::Created) => "created",
@@ -95,8 +115,14 @@ fn file_change_to_event(f: &FileChange) -> FileChangeEvent {
 }
 
 #[tauri::command]
-async fn get_connected_count(state: tauri::State<'_, AppState>) -> Result<usize, String> {
-    Ok(state.ws_server.connected_count().await)
+async fn get_connected_count(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
+    let connected = state.ws_server.connected_count().await;
+    let pending = state.auth_manager.list_pending().await.len();
+    update_tray_tooltip(&app, pending, connected);
+    Ok(connected)
 }
 
 #[tauri::command]
@@ -118,6 +144,17 @@ async fn get_pending_requests(
             timeout_seconds: r.timeout_seconds,
         })
         .collect())
+}
+
+#[tauri::command]
+async fn get_log_entries(state: tauri::State<'_, AppState>) -> Result<Vec<LogEntry>, String> {
+    Ok(state.log_store.list().await)
+}
+
+#[tauri::command]
+async fn clear_log(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.log_store.clear().await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -200,19 +237,77 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // Hide instead of quit — the app keeps running in the tray so
+                // hook requests still get answered when the window is closed.
+                window.hide().ok();
+                api.prevent_close();
+            }
+        })
         .setup(|app| {
+            // System tray with show / quit menu items
+            let show_item = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
+            let separator = PredefinedMenuItem::separator(app)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出 MoyuGuard", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
+
+            let _tray = TrayIconBuilder::with_id("main")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .tooltip("MoyuGuard · 等待连接")
+                .icon(app.default_window_icon().unwrap().clone())
+                .icon_as_template(true)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            let _ = window.unminimize();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // Left-click toggles the main window visibility
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+
             let ws_server = Arc::new(WsServer::new(WS_PORT));
             let auth_manager = Arc::new(AuthManager::new());
+            let log_store = LogStore::new();
 
             let state = AppState {
                 ws_server: ws_server.clone(),
                 auth_manager: auth_manager.clone(),
+                log_store: log_store.clone(),
             };
             app.manage(state);
 
             let app_handle = app.handle().clone();
             let ws = ws_server.clone();
             let am = auth_manager.clone();
+            let ls = log_store.clone();
 
             tauri::async_runtime::spawn(async move {
                 let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
@@ -243,10 +338,10 @@ pub fn run() {
                 while let Some((client_id, incoming)) = msg_rx.recv().await {
                     match incoming {
                         IncomingMessage::Proto(envelope) => {
-                            handle_proto_message(&client_id, envelope, &ws, &am, &app_handle).await;
+                            handle_proto_message(&client_id, envelope, &ws, &am, &ls, &app_handle).await;
                         }
                         IncomingMessage::Json(json) => {
-                            handle_json_message(&client_id, json, &ws, &am, &app_handle).await;
+                            handle_json_message(&client_id, json, &ws, &am, &ls, &app_handle).await;
                         }
                     }
                 }
@@ -257,6 +352,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_connected_count,
             get_pending_requests,
+            get_log_entries,
+            clear_log,
             send_mock_request,
             install_hooks,
             uninstall_hooks,
@@ -271,6 +368,7 @@ async fn handle_proto_message(
     envelope: Envelope,
     ws: &Arc<WsServer>,
     am: &Arc<AuthManager>,
+    ls: &Arc<LogStore>,
     app_handle: &AppHandle,
 ) {
     match MessageType::try_from(envelope.r#type) {
@@ -278,7 +376,9 @@ async fn handle_proto_message(
             if let Some(envelope::Payload::AuthResponse(resp)) = envelope.payload {
                 let decision = Decision::try_from(resp.decision)
                     .unwrap_or(Decision::Unspecified);
-                am.resolve(&resp.request_id, decision, resp.reason).await;
+                if let Some(req) = am.resolve(&resp.request_id, decision, resp.reason.clone()).await {
+                    record_log(ls, app_handle, &req, decision, &resp.reason).await;
+                }
                 let _ = app_handle.emit("auth-resolved", &resp.request_id);
             }
         }
@@ -300,6 +400,7 @@ async fn handle_json_message(
     json: serde_json::Value,
     ws: &Arc<WsServer>,
     am: &Arc<AuthManager>,
+    ls: &Arc<LogStore>,
     app_handle: &AppHandle,
 ) {
     let msg_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -323,7 +424,9 @@ async fn handle_json_message(
             };
 
             info!("JSON auth response: {} -> {:?}", request_id, decision);
-            am.resolve(request_id, decision, reason).await;
+            if let Some(req) = am.resolve(request_id, decision, reason.clone()).await {
+                record_log(ls, app_handle, &req, decision, &reason).await;
+            }
             let _ = app_handle.emit("auth-resolved", request_id);
         }
         "heartbeat" => {
@@ -333,6 +436,33 @@ async fn handle_json_message(
             info!("Unknown JSON message type: {}", msg_type);
         }
     }
+}
+
+async fn record_log(
+    ls: &Arc<LogStore>,
+    app_handle: &AppHandle,
+    req: &AuthorizationRequest,
+    decision: Decision,
+    reason: &str,
+) {
+    let decision_str = match decision {
+        Decision::Approved => "approved",
+        Decision::Rejected => "rejected",
+        Decision::Timeout => "timeout",
+        _ => "unknown",
+    };
+    let entry = LogEntry {
+        id: req.request_id.clone(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        tool_name: req.tool_name.clone(),
+        summary: req.summary.clone(),
+        risk_level: risk_name(req.risk_level).to_string(),
+        operation: operation_name(req.operation).to_string(),
+        decision: decision_str.to_string(),
+        reason: reason.to_string(),
+    };
+    ls.append(entry.clone()).await;
+    let _ = app_handle.emit("log-appended", &entry);
 }
 
 async fn send_pair_response(client_id: &str, ws: &Arc<WsServer>, app_handle: &AppHandle) {

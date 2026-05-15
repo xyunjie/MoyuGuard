@@ -51,16 +51,21 @@ impl AuthManager {
         rx
     }
 
-    pub async fn resolve(&self, request_id: &str, decision: Decision, reason: String) -> bool {
-        if let Some(req) = self.pending.write().await.remove(request_id) {
-            let _ = req.response_tx.send(AuthorizationResponse {
+    pub async fn resolve(
+        &self,
+        request_id: &str,
+        decision: Decision,
+        reason: String,
+    ) -> Option<AuthorizationRequest> {
+        if let Some(pending) = self.pending.write().await.remove(request_id) {
+            let _ = pending.response_tx.send(AuthorizationResponse {
                 request_id: request_id.to_string(),
                 decision: decision.into(),
                 reason,
             }).await;
-            true
+            Some(pending.request)
         } else {
-            false
+            None
         }
     }
 

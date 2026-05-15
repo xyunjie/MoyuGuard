@@ -29,18 +29,10 @@ interface AuthRequest {
   timeout_seconds: number;
 }
 
-interface LogEntry {
-  id: string;
-  type: "approved" | "rejected" | "info";
-  time: string;
-  text: string;
-}
-
 function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [connectedCount, setConnectedCount] = useState(0);
   const [pendingRequests, setPendingRequests] = useState<AuthRequest[]>([]);
-  const [resolvedLog, setResolvedLog] = useState<LogEntry[]>([]);
 
   useEffect(() => {
     const pollStatus = async () => {
@@ -64,15 +56,6 @@ function App() {
     const unlistenResolved = listen<string>("auth-resolved", (event) => {
       const id = event.payload;
       setPendingRequests((prev) => prev.filter((r) => r.request_id !== id));
-      setResolvedLog((prev) => [
-        {
-          id,
-          type: "approved",
-          time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
-          text: `请求 ${id.slice(0, 8)} 已处理`,
-        },
-        ...prev,
-      ]);
     });
 
     const unlistenConnection = listen<{ connected_count: number }>(
@@ -151,7 +134,7 @@ function App() {
             onMockRequest={handleMockRequest}
           />
         )}
-        {tab === "log" && <AuthLog logs={resolvedLog} />}
+        {tab === "log" && <AuthLog />}
         {tab === "settings" && <Settings />}
       </main>
     </div>
