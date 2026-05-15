@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   ActivityIcon,
   AlertIcon,
@@ -14,6 +15,14 @@ import {
   ZapIcon,
 } from "./Icons";
 
+interface FileChange {
+  path: string;
+  change_type: string;
+  diff: string;
+  additions: number;
+  deletions: number;
+}
+
 interface AuthRequest {
   request_id: string;
   tool_name: string;
@@ -21,6 +30,8 @@ interface AuthRequest {
   risk_level: string;
   summary: string;
   file_count: number;
+  files?: FileChange[];
+  raw_command?: string;
   timeout_seconds: number;
 }
 
@@ -87,8 +98,18 @@ function formatToolName(name: string): string {
 }
 
 function Dashboard({ pendingRequests, connectedCount, onMockRequest }: DashboardProps) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const safeRisk = (level: string) =>
     ["low", "medium", "high", "critical"].includes(level) ? level : "medium";
+
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   return (
     <div className="dashboard">
@@ -143,6 +164,9 @@ function Dashboard({ pendingRequests, connectedCount, onMockRequest }: Dashboard
           <div className="request-list">
             {pendingRequests.map((req) => {
               const risk = safeRisk(req.risk_level);
+              const isExpanded = expanded.has(req.request_id);
+              const hasDetails =
+                (req.files && req.files.length > 0) || (req.raw_command && req.raw_command.length > 0);
               return (
                 <div
                   key={req.request_id}
@@ -173,6 +197,60 @@ function Dashboard({ pendingRequests, connectedCount, onMockRequest }: Dashboard
                       {req.timeout_seconds}s
                     </span>
                   </div>
+                  {hasDetails && (
+                    <button
+                      className="details-toggle"
+                      onClick={() => toggleExpand(req.request_id)}
+                      aria-expanded={isExpanded}
+                    >
+                      <ChevronIcon expanded={isExpanded} />
+                      {isExpanded ? "收起详情" : "查看详情"}
+                    </button>
+                  )}
+                  {hasDetails && isExpanded && (
+                    <div className="request-details">
+                      {req.raw_command && (
+                        <div className="detail-block">
+                          <div className="detail-label">命令</div>
+                          <pre className="code-block">{req.raw_command}</pre>
+                        </div>
+                      )}
+                      {req.files && req.files.length > 0 && (
+                        <div className="detail-block">
+                          <div className="detail-label">文件变更</div>
+                          {req.files.map((f, i) => (
+                            <div key={i} className="file-change">
+                              <div className="file-header">
+                                <span className="file-path">{f.path}</span>
+                                <span className="file-stats">
+                                  <span className="add">+{f.additions}</span>
+                                  <span className="del">−{f.deletions}</span>
+                                </span>
+                              </div>
+                              {f.diff && (
+                                <pre className="diff-block">
+                                  {f.diff.split("\n").map((line, j) => {
+                                    const cls = line.startsWith("+")
+                                      ? "diff-add"
+                                      : line.startsWith("-")
+                                      ? "diff-del"
+                                      : line.startsWith("@")
+                                      ? "diff-hunk"
+                                      : "";
+                                    return (
+                                      <div key={j} className={cls}>
+                                        {line || " "}
+                                      </div>
+                                    );
+                                  })}
+                                </pre>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -188,6 +266,27 @@ function ClockSmall() {
     <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="9" />
       <polyline points="12 7 12 12 15 14" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      width={12}
+      height={12}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{
+        transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+        transition: "transform 180ms cubic-bezier(0.16, 1, 0.3, 1)",
+      }}
+    >
+      <polyline points="9 18 15 12 9 6" />
     </svg>
   );
 }

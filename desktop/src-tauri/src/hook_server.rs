@@ -168,6 +168,19 @@ async fn handle_pre_tool_use(
     ws_server.broadcast(&envelope).await;
 
     use tauri::Emitter;
+    let files_json: Vec<serde_json::Value> = request.files.iter().map(|f| serde_json::json!({
+        "path": f.path,
+        "change_type": match ChangeType::try_from(f.change_type) {
+            Ok(ChangeType::Created) => "created",
+            Ok(ChangeType::Modified) => "modified",
+            Ok(ChangeType::Deleted) => "deleted",
+            Ok(ChangeType::Renamed) => "renamed",
+            _ => "unknown",
+        },
+        "diff": f.diff,
+        "additions": f.additions,
+        "deletions": f.deletions,
+    })).collect();
     let ui_event = serde_json::json!({
         "request_id": request.request_id,
         "tool_name": request.tool_name,
@@ -175,6 +188,8 @@ async fn handle_pre_tool_use(
         "risk_level": risk_name_str(request.risk_level),
         "summary": request.summary,
         "file_count": request.files.len(),
+        "files": files_json,
+        "raw_command": request.raw_command,
         "timeout_seconds": request.timeout_seconds,
     });
     let _ = app_handle.emit("auth-request", &ui_event);

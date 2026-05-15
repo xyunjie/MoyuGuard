@@ -9,6 +9,14 @@ import "./App.css";
 
 type Tab = "dashboard" | "log" | "settings";
 
+interface FileChange {
+  path: string;
+  change_type: string;
+  diff: string;
+  additions: number;
+  deletions: number;
+}
+
 interface AuthRequest {
   request_id: string;
   tool_name: string;
@@ -16,6 +24,8 @@ interface AuthRequest {
   risk_level: string;
   summary: string;
   file_count: number;
+  files?: FileChange[];
+  raw_command?: string;
   timeout_seconds: number;
 }
 

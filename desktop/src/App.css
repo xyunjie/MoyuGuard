@@ -570,6 +570,148 @@ button {
   gap: 4px;
 }
 
+/* ───────── Request Details (diff/command preview) ───────── */
+.details-toggle {
+  margin-top: var(--space-3);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color var(--duration-fast) var(--ease-out), background-color var(--duration-fast) var(--ease-out);
+}
+
+.details-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.request-details {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  animation: details-expand var(--duration-base) var(--ease-out);
+}
+
+@keyframes details-expand {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.code-block {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.file-change {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.file-change + .file-change {
+  margin-top: var(--space-2);
+}
+
+.file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px var(--space-3);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.file-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.file-stats {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  display: inline-flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  margin-left: var(--space-3);
+}
+
+.file-stats .add {
+  color: var(--risk-low);
+}
+
+.file-stats .del {
+  color: var(--risk-critical);
+}
+
+.diff-block {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  padding: var(--space-3);
+  margin: 0;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--text-secondary);
+}
+
+.diff-block .diff-add {
+  color: var(--risk-low);
+  background: var(--risk-low-soft);
+  margin: 0 calc(-1 * var(--space-3));
+  padding: 0 var(--space-3);
+}
+
+.diff-block .diff-del {
+  color: var(--risk-critical);
+  background: var(--risk-critical-soft);
+  margin: 0 calc(-1 * var(--space-3));
+  padding: 0 var(--space-3);
+}
+
+.diff-block .diff-hunk {
+  color: var(--accent-hover);
+  font-weight: 500;
+}
+
 /* ───────── Auth Log ───────── */
 .auth-log h2 {
   font-size: var(--text-md);

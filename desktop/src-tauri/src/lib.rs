@@ -26,6 +26,15 @@ struct AppState {
 }
 
 #[derive(Serialize, Clone)]
+struct FileChangeEvent {
+    path: String,
+    change_type: String,
+    diff: String,
+    additions: i32,
+    deletions: i32,
+}
+
+#[derive(Serialize, Clone)]
 struct AuthRequestEvent {
     request_id: String,
     tool_name: String,
@@ -33,6 +42,8 @@ struct AuthRequestEvent {
     risk_level: String,
     summary: String,
     file_count: usize,
+    files: Vec<FileChangeEvent>,
+    raw_command: String,
     timeout_seconds: u32,
 }
 
@@ -63,6 +74,26 @@ fn risk_name(level: i32) -> &'static str {
     }
 }
 
+fn change_type_name(ct: i32) -> &'static str {
+    match ChangeType::try_from(ct) {
+        Ok(ChangeType::Created) => "created",
+        Ok(ChangeType::Modified) => "modified",
+        Ok(ChangeType::Deleted) => "deleted",
+        Ok(ChangeType::Renamed) => "renamed",
+        _ => "unknown",
+    }
+}
+
+fn file_change_to_event(f: &FileChange) -> FileChangeEvent {
+    FileChangeEvent {
+        path: f.path.clone(),
+        change_type: change_type_name(f.change_type).to_string(),
+        diff: f.diff.clone(),
+        additions: f.additions,
+        deletions: f.deletions,
+    }
+}
+
 #[tauri::command]
 async fn get_connected_count(state: tauri::State<'_, AppState>) -> Result<usize, String> {
     Ok(state.ws_server.connected_count().await)
@@ -82,6 +113,8 @@ async fn get_pending_requests(
             risk_level: risk_name(r.risk_level).to_string(),
             summary: r.summary,
             file_count: r.files.len(),
+            files: r.files.iter().map(file_change_to_event).collect(),
+            raw_command: r.raw_command,
             timeout_seconds: r.timeout_seconds,
         })
         .collect())
@@ -126,6 +159,8 @@ async fn send_mock_request(
         risk_level: risk_name(request.risk_level).to_string(),
         summary: request.summary.clone(),
         file_count: request.files.len(),
+        files: request.files.iter().map(file_change_to_event).collect(),
+        raw_command: request.raw_command.clone(),
         timeout_seconds: request.timeout_seconds,
     };
     let _ = app.emit("auth-request", &event);
