@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>摸鱼守卫 - 手机端模拟</title>
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --bg2: #1a1a1a;
+      --card: #222;
+      --border: #333;
+      --text: #e8e8e8;
+      --text2: #999;
+      --blue: #3b82f6;
+      --green: #22c55e;
+      --red: #ef4444;
+      --orange: #f97316;
+      --yellow: #eab308;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      max-width: 430px;
+      margin: 0 auto;
+      min-height: 100vh;
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+    }
+
+    .header {
+      background: var(--bg2);
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .header h1 { font-size: 18px; }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text2);
+    }
+
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #666;
+    }
+
+    .dot.on {
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+    }
+
+    /* 连接面板 */
+    .connect-panel {
+      padding: 40px 20px;
+      text-align: center;
+    }
+
+    .connect-panel .icon { font-size: 48px; margin-bottom: 16px; }
+    .connect-panel p { color: var(--text2); font-size: 14px; margin-bottom: 24px; }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    input {
+      flex: 1;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+
+    input:focus { border-color: var(--blue); }
+
+    input.port { max-width: 80px; }
+
+    .btn {
+      padding: 12px 20px;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .btn:active { opacity: 0.7; }
+    .btn-primary { background: var(--blue); color: white; width: 100%; }
+    .btn-disconnect { background: var(--card); color: var(--red); border: 1px solid var(--border); font-size: 12px; padding: 6px 12px; }
+    .btn-approve { background: var(--green); color: white; flex: 1; }
+    .btn-reject { background: transparent; color: var(--red); border: 1px solid var(--red); flex: 1; }
+
+    /* 空状态 */
+    .empty {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--text2);
+    }
+
+    .empty .icon { font-size: 48px; margin-bottom: 12px; }
+    .empty .sub { font-size: 12px; margin-top: 8px; opacity: 0.6; }
+
+    /* 请求卡片 */
+    .requests { padding: 16px; }
+
+    .req-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .req-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .badge {
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .badge-tool { background: var(--bg); color: var(--text); font-weight: 500; font-size: 12px; }
+    .badge-low { background: var(--green); color: white; }
+    .badge-medium { background: var(--yellow); color: #000; }
+    .badge-high { background: var(--orange); color: white; }
+    .badge-critical { background: var(--red); color: white; }
+
+    .req-summary { font-size: 14px; line-height: 1.5; margin-bottom: 8px; }
+
+    .req-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text2);
+      margin-bottom: 12px;
+    }
+
+    .req-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .req-actions .btn {
+      padding: 10px;
+      font-size: 14px;
+    }
+
+    /* Diff 展开 */
+    .diff-toggle {
+      background: none;
+      border: none;
+      color: var(--blue);
+      font-size: 12px;
+      cursor: pointer;
+      margin-bottom: 8px;
+      padding: 0;
+    }
+
+    .diff-block {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 10px;
+      font-family: monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      margin-bottom: 12px;
+      white-space: pre-wrap;
+      overflow-x: auto;
+    }
+
+    .diff-block .add { color: var(--green); }
+    .diff-block .del { color: var(--red); }
+    .diff-block .hdr { color: var(--blue); }
+
+    .file-path {
+      font-family: monospace;
+      font-size: 12px;
+      color: var(--text2);
+      margin-bottom: 4px;
+    }
+
+    .file-stats { font-size: 11px; margin-bottom: 6px; }
+    .file-stats .a { color: var(--green); }
+    .file-stats .d { color: var(--red); }
+
+    /* 日志 */
+    .log-section {
+      padding: 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .log-section h3 {
+      font-size: 13px;
+      color: var(--text2);
+      margin-bottom: 8px;
+    }
+
+    .log-entry {
+      font-family: monospace;
+      font-size: 11px;
+      padding: 6px 10px;
+      background: var(--card);
+      border-radius: 6px;
+      color: var(--text2);
+      margin-bottom: 4px;
+    }
+
+    .log-entry.approved { border-left: 3px solid var(--green); }
+    .log-entry.rejected { border-left: 3px solid var(--red); }
+
+    /* 提示条 */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 10px 20px;
+      border-radius: 10px;
+      font-size: 13px;
+      z-index: 100;
+      animation: fadeInUp 0.3s ease;
+    }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translate(-50%, 10px); }
+      to { opacity: 1; transform: translate(-50%, 0); }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    const TOOL_NAMES = { claude_code: 'Claude Code', aider: 'Aider', codex: 'Codex' };
+    const OP_NAMES = { file_write: '写入文件', file_delete: '删除文件', shell_execute: '执行命令', git_push: 'Git Push', package_install: '安装包', config_modify: '修改配置' };
+
+    function formatToolName(name) {
+      if (!name) return 'Unknown';
+      if (name.includes(':')) {
+        const [source, tool] = name.split(':', 2);
+        const sourceName = TOOL_NAMES[source] || source;
+        return `${sourceName} / ${tool}`;
+      }
+      return TOOL_NAMES[name] || name;
+    }
+
+    let ws = null;
+    let connected = false;
+    let pendingRequests = [];
+    let logs = [];
+    let expandedDiffs = new Set();
+
+    function render() {
+      const app = document.getElementById('app');
+      if (!connected) {
+        app.innerHTML = renderConnectPage();
+      } else {
+        app.innerHTML = renderMainPage();
+      }
+      bindEvents();
+    }
+
+    function renderConnectPage() {
+      return `
+        <div class="header">
+          <h1>🐟 摸鱼守卫</h1>
+          <div class="status"><span class="dot"></span>未连接</div>
+        </div>
+        <div class="connect-panel">
+          <div class="icon">📡</div>
+          <p>连接电脑端 WebSocket 服务</p>
+          <div class="input-row">
+            <input id="host" placeholder="IP 地址" value="127.0.0.1">
+            <input id="port" class="port" placeholder="端口" value="9876">
+          </div>
+          <button class="btn btn-primary" onclick="doConnect()">连接</button>
+        </div>
+      `;
+    }
+
+    function renderMainPage() {
+      const reqHtml = pendingRequests.length === 0
+        ? `<div class="empty">
+            <div class="icon">🛡️</div>
+            <p>一切安全，放心摸鱼</p>
+            <p class="sub">AI 工具执行危险操作时会在此显示</p>
+          </div>`
+        : `<div class="requests">${pendingRequests.map(renderCard).join('')}</div>`;
+
+      const logHtml = logs.length > 0
+        ? `<div class="log-section">
+            <h3>操作记录</h3>
+            ${logs.slice(0, 20).map(l => `<div class="log-entry ${l.type}">${l.text}</div>`).join('')}
+          </div>`
+        : '';
+
+      return `
+        <div class="header">
+          <h1>🐟 摸鱼守卫</h1>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div class="status"><span class="dot on"></span>已连接</div>
+            <button class="btn btn-disconnect" onclick="doDisconnect()">断开</button>
+          </div>
+        </div>
+        ${reqHtml}
+        ${logHtml}
+      `;
+    }
+
+    function renderCard(req) {
+      const riskClass = 'badge-' + (req.risk_level || 'medium');
+      const tool = formatToolName(req.tool_name);
+      const op = OP_NAMES[req.operation] || req.operation;
+      const risk = (req.risk_level || 'unknown').toUpperCase();
+      const showDiff = expandedDiffs.has(req.request_id);
+
+      let filesHtml = '';
+      if (req.files && req.files.length > 0 && showDiff) {
+        filesHtml = req.files.map(f => {
+          const diffLines = (f.diff || '').split('\n').map(line => {
+            if (line.startsWith('+')) return `<span class="add">${esc(line)}</span>`;
+            if (line.startsWith('-')) return `<span class="del">${esc(line)}</span>`;
+            if (line.startsWith('@')) return `<span class="hdr">${esc(line)}</span>`;
+            return esc(line);
+          }).join('\n');
+          return `
+            <div class="file-path">${esc(f.path)}</div>
+            <div class="file-stats"><span class="a">+${f.additions||0}</span> <span class="d">-${f.deletions||0}</span></div>
+            <div class="diff-block">${diffLines}</div>
+          `;
+        }).join('');
+      }
+
+      let cmdHtml = '';
+      if (req.raw_command && showDiff) {
+        cmdHtml = `<div class="diff-block">${esc(req.raw_command)}</div>`;
+      }
+
+      const hasDetails = (req.files && req.files.length > 0) || req.raw_command;
+      const diffToggle = hasDetails
+        ? `<button class="diff-toggle" onclick="toggleDiff('${req.request_id}')">${showDiff ? '收起详情 ▲' : '查看详情 ▼'}</button>`
+        : '';
+
+      return `
+        <div class="req-card" id="card-${req.request_id}">
+          <div class="req-top">
+            <span class="badge badge-tool">${tool}</span>
+            <span class="badge ${riskClass}">${risk}</span>
+          </div>
+          <div class="req-summary">${esc(req.summary)}</div>
+          <div class="req-meta">
+            <span>${op}</span>
+            <span>${(req.files||[]).length} 个文件</span>
+            <span>超时 ${req.timeout_seconds || 60}s</span>
+          </div>
+          ${diffToggle}
+          ${cmdHtml}
+          ${filesHtml}
+          <div class="req-actions">
+            <button class="btn btn-reject" onclick="decide('${req.request_id}','rejected')">拒绝</button>
+            <button class="btn btn-approve" onclick="decide('${req.request_id}','approved')">允许</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function esc(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function toggleDiff(id) {
+      if (expandedDiffs.has(id)) expandedDiffs.delete(id);
+      else expandedDiffs.add(id);
+      render();
+    }
+
+    function doConnect() {
+      const host = document.getElementById('host').value.trim() || '127.0.0.1';
+      const port = document.getElementById('port').value.trim() || '9876';
+      try {
+        ws = new WebSocket(`ws://${host}:${port}`);
+        ws.binaryType = 'arraybuffer';
+
+        ws.onopen = () => {
+          connected = true;
+          addLog('info', `已连接 ${host}:${port}`);
+          render();
+          // 发送配对请求 (JSON fallback for MVP)
+          wsSendJson({
+            type: 'pair_request',
+            device_name: 'Chrome 模拟器',
+            device_id: 'chrome-sim-' + Date.now(),
+            platform: 'web'
+          });
+        };
+
+        ws.onmessage = (evt) => {
+          handleMessage(evt.data);
+        };
+
+        ws.onclose = () => {
+          connected = false;
+          addLog('info', '连接已断开');
+          render();
+        };
+
+        ws.onerror = (e) => {
+          showToast('连接失败，请确认电脑端已启动');
+          console.error('WebSocket error:', e);
+        };
+      } catch (e) {
+        showToast('连接失败: ' + e.message);
+      }
+    }
+
+    function doDisconnect() {
+      if (ws) ws.close();
+      ws = null;
+      connected = false;
+      pendingRequests = [];
+      render();
+    }
+
+    function handleMessage(data) {
+      // 尝试 Protobuf (binary)，降级到尝试解析为 JSON
+      if (data instanceof ArrayBuffer) {
+        // MVP: 尝试把 binary 当文本解析
+        try {
+          const text = new TextDecoder().decode(data);
+          const json = JSON.parse(text);
+          handleJsonMsg(json);
+          return;
+        } catch(e) {
+          // 真正的 Protobuf 二进制 — 后续版本解析
+          console.log('Received binary protobuf message, length:', data.byteLength);
+          // 对于 MVP，我们把收到的 protobuf 消息作为模拟授权请求
+          handleProtobufFallback(data);
+          return;
+        }
+      }
+      // 文本消息
+      try {
+        const json = JSON.parse(data);
+        handleJsonMsg(json);
+      } catch(e) {
+        console.log('Unknown message:', data);
+      }
+    }
+
+    function handleProtobufFallback(buffer) {
+      // 收到 protobuf 二进制说明电脑端发来了授权请求
+      // MVP 阶段简单处理：生成一个模拟请求让用户能看到效果
+      const id = 'pb-' + Date.now();
+      const req = {
+        request_id: id,
+        tool_name: 'claude_code',
+        operation: 'file_write',
+        risk_level: 'medium',
+        summary: '收到来自电脑端的授权请求 (Protobuf)',
+        files: [],
+        raw_command: '',
+        timeout_seconds: 60
+      };
+      pendingRequests.push(req);
+      addLog('info', '收到授权请求 (Protobuf binary)');
+      render();
+    }
+
+    function handleJsonMsg(msg) {
+      if (msg.type === 'auth_request') {
+        pendingRequests.push(msg);
+        addLog('info', `收到: ${formatToolName(msg.tool_name)} - ${msg.summary}`);
+        render();
+        // 通知
+        if (Notification.permission === 'granted') {
+          new Notification('摸鱼守卫', { body: msg.summary });
+        }
+      } else if (msg.type === 'pair_response') {
+        addLog('info', `配对成功: ${msg.computer_name || '电脑'}`);
+        render();
+      }
+    }
+
+    function decide(requestId, decision) {
+      // 发送 JSON 决策 (MVP)
+      wsSendJson({
+        type: 'auth_response',
+        request_id: requestId,
+        decision: decision,
+        reason: ''
+      });
+
+      // 同时尝试发送 Protobuf（电脑端目前用 Protobuf 解析）
+      // 这里用 JSON 兜底，后续统一
+
+      const req = pendingRequests.find(r => r.request_id === requestId);
+      pendingRequests = pendingRequests.filter(r => r.request_id !== requestId);
+      expandedDiffs.delete(requestId);
+      addLog(decision, `${decision === 'approved' ? '✅ 已批准' : '❌ 已拒绝'}: ${req?.summary || requestId}`);
+      render();
+      showToast(decision === 'approved' ? '已批准 ✅' : '已拒绝 ❌');
+    }
+
+    function wsSendJson(obj) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(obj));
+      }
+    }
+
+    function addLog(type, text) {
+      const time = new Date().toLocaleTimeString();
+      logs.unshift({ type, text: `[${time}] ${text}` });
+      if (logs.length > 50) logs.pop();
+    }
+
+    function showToast(msg) {
+      const existing = document.querySelector('.toast');
+      if (existing) existing.remove();
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 2000);
+    }
+
+    function bindEvents() {}
+
+    // 请求通知权限
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
+    render();
+  </script>
+</body>
+</html>

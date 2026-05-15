@@ -1,0 +1,138 @@
+syntax = "proto3";
+
+package moyuguard;
+
+// ============================================================
+// 信封 - 所有 WebSocket 消息的外层包裹
+// ============================================================
+
+message Envelope {
+  string message_id = 1;
+  uint64 timestamp = 2;
+  MessageType type = 3;
+
+  oneof payload {
+    PairRequest pair_request = 10;
+    PairResponse pair_response = 11;
+    AuthorizationRequest auth_request = 12;
+    AuthorizationResponse auth_response = 13;
+    Heartbeat heartbeat = 14;
+    StatusSync status_sync = 15;
+  }
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  PAIR_REQUEST = 1;
+  PAIR_RESPONSE = 2;
+  AUTH_REQUEST = 3;
+  AUTH_RESPONSE = 4;
+  HEARTBEAT = 5;
+  STATUS_SYNC = 6;
+}
+
+// ============================================================
+// 配对
+// ============================================================
+
+message PairRequest {
+  string device_name = 1;
+  string device_id = 2;
+  string platform = 3; // "ios" | "android"
+}
+
+message PairResponse {
+  bool accepted = 1;
+  string computer_name = 2;
+  string computer_id = 3;
+  string session_token = 4;
+}
+
+// ============================================================
+// 授权
+// ============================================================
+
+message AuthorizationRequest {
+  string request_id = 1;
+  string tool_name = 2;          // "claude_code" | "aider" | "codex"
+  OperationType operation = 3;
+  RiskLevel risk_level = 4;
+  string summary = 5;
+  repeated FileChange files = 6;
+  string raw_command = 7;
+  uint32 timeout_seconds = 8;    // 超时后自动拒绝
+}
+
+enum OperationType {
+  OPERATION_UNSPECIFIED = 0;
+  FILE_WRITE = 1;
+  FILE_DELETE = 2;
+  SHELL_EXECUTE = 3;
+  GIT_PUSH = 4;
+  PACKAGE_INSTALL = 5;
+  CONFIG_MODIFY = 6;
+}
+
+enum RiskLevel {
+  RISK_UNSPECIFIED = 0;
+  LOW = 1;
+  MEDIUM = 2;
+  HIGH = 3;
+  CRITICAL = 4;
+}
+
+message FileChange {
+  string path = 1;
+  ChangeType change_type = 2;
+  string diff = 3;
+  int32 additions = 4;
+  int32 deletions = 5;
+}
+
+enum ChangeType {
+  CHANGE_UNSPECIFIED = 0;
+  CREATED = 1;
+  MODIFIED = 2;
+  DELETED = 3;
+  RENAMED = 4;
+}
+
+message AuthorizationResponse {
+  string request_id = 1;
+  Decision decision = 2;
+  string reason = 3;           // 用户可选填拒绝理由
+}
+
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  APPROVED = 1;
+  REJECTED = 2;
+  TIMEOUT = 3;
+}
+
+// ============================================================
+// 心跳 & 状态同步
+// ============================================================
+
+message Heartbeat {
+  uint64 uptime_seconds = 1;
+}
+
+message StatusSync {
+  ComputerStatus status = 1;
+  uint32 pending_requests = 2;
+  repeated ActiveTool active_tools = 3;
+}
+
+enum ComputerStatus {
+  COMPUTER_STATUS_UNSPECIFIED = 0;
+  IDLE = 1;
+  WORKING = 2;
+  WAITING_AUTH = 3;
+}
+
+message ActiveTool {
+  string name = 1;
+  string pid = 2;
+  uint64 started_at = 3;
+}
