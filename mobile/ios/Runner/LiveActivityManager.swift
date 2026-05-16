@@ -1,6 +1,15 @@
 import ActivityKit
 import Foundation
 
+// Must match the definition in MoyuGuardWidgetLiveActivity.swift
+struct MoyuGuardActivityAttributes: ActivityAttributes {
+    public struct ContentState: Codable, Hashable {
+        var pendingCount: Int
+        var latestSummary: String
+        var latestRisk: String
+    }
+}
+
 @available(iOS 16.2, *)
 class LiveActivityManager {
     static let shared = LiveActivityManager()
@@ -48,7 +57,7 @@ class LiveActivityManager {
     func end() {
         guard let activity = currentActivity else { return }
         Task {
-            await activity.end(dismissalPolicy: .immediate)
+            await activity.end(dismissalPolicy: ActivityUIDismissalPolicy.immediate)
             currentActivity = nil
         }
     }

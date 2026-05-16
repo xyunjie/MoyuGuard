@@ -12,9 +12,12 @@ import UIKit
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
 
-    func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
+    func didInitializeImplicitFlutterEngine(_ engineBridge: any FlutterImplicitEngineBridge) {
         GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-        setupLiveActivityChannel(binaryMessenger: engineBridge.binaryMessenger)
+        let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MoyuGuardLiveActivity")
+        if let messenger = registrar?.messenger() {
+            setupLiveActivityChannel(binaryMessenger: messenger)
+        }
     }
 
     private func setupLiveActivityChannel(binaryMessenger: FlutterBinaryMessenger) {
