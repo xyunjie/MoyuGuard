@@ -1,11 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/auth_request.dart';
 
 enum PairState { idle, waiting, rejected }
+
+const _liveActivityChannel = MethodChannel('moyuguard/live_activity');
+
+bool get _supportsLiveActivity =>
+    !kIsWeb && Platform.isIOS;
 
 class ConnectionService extends ChangeNotifier {
   WebSocketChannel? _channel;
@@ -109,6 +116,7 @@ class ConnectionService extends ChangeNotifier {
         _pendingRequests.add(req);
         _addLog('收到授权请求: ${req.toolDisplayName} - ${req.summary}');
         notifyListeners();
+        _updateLiveActivity();
       } else if (type == 'pair_response') {
         final accepted = msg['accepted'] as bool? ?? false;
         if (accepted) {
@@ -140,6 +148,7 @@ class ConnectionService extends ChangeNotifier {
       '${decision == Decision.approved ? "✅ 已批准" : "❌ 已拒绝"}: $requestId',
     );
     notifyListeners();
+    _updateLiveActivity();
   }
 
   void _startHeartbeat() {
@@ -159,6 +168,26 @@ class ConnectionService extends ChangeNotifier {
     _computerName = null;
     _pendingRequests.clear();
     notifyListeners();
+    if (_supportsLiveActivity) {
+      _liveActivityChannel.invokeMethod('end').catchError((_) {});
+    }
+  }
+
+  void _updateLiveActivity() {
+    if (!_supportsLiveActivity) return;
+    if (_pendingRequests.isEmpty) {
+      _liveActivityChannel.invokeMethod('end').catchError((_) {});
+      return;
+    }
+    final latest = _pendingRequests.last;
+    final args = {
+      'pendingCount': _pendingRequests.length,
+      'summary': latest.summary,
+      'risk': latest.riskLevel.name,
+    };
+    _liveActivityChannel
+        .invokeMethod('update', args)
+        .catchError((_) => _liveActivityChannel.invokeMethod('start', args).catchError((_) {}));
   }
 
   void disconnect() {

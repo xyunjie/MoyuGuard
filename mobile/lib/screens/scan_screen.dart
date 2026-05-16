@@ -1,9 +1,19 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/connection_service.dart';
 import '../services/mdns_discovery.dart';
+
+// On simulator, mDNS can't browse host services; use 127.0.0.1 directly.
+bool get _isSimulator =>
+    !kIsWeb && Platform.isIOS && Platform.environment.containsKey('SIMULATOR_DEVICE_NAME');
+
+String get _defaultHost {
+  if (kIsWeb || _isSimulator) return '127.0.0.1';
+  return '';
+}
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -14,7 +24,7 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> {
   final _mdns = MdnsDiscovery();
-  final _hostController = TextEditingController(text: kIsWeb ? '127.0.0.1' : '');
+  final _hostController = TextEditingController(text: _defaultHost);
   final _portController = TextEditingController(text: '9876');
   bool _isScanning = false;
   bool _isConnecting = false;
@@ -81,7 +91,11 @@ class _ScanScreenState extends State<ScanScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                kIsWeb ? '请手动输入电脑端 IP 和端口' : '扫描局域网中的电脑...',
+                kIsWeb
+                    ? '请手动输入电脑端 IP 和端口'
+                    : _isSimulator
+                        ? '模拟器请使用下方手动连接 127.0.0.1'
+                        : '扫描局域网中的电脑...',
                 style: TextStyle(
                   fontSize: 14,
                   color: Colors.grey[500],
