@@ -1,4 +1,5 @@
 mod auth;
+mod config;
 mod hook_installer;
 mod hook_server;
 mod interceptor;
@@ -23,8 +24,7 @@ use log_store::{LogEntry, LogStore};
 use mdns::MdnsServer;
 use proto::proto::*;
 use ws_server::{IncomingMessage, WsServer};
-
-const WS_PORT: u16 = 9876;
+use config::AppConfig;
 
 struct AppState {
     ws_server: Arc<WsServer>,
@@ -269,6 +269,33 @@ fn get_hook_status() -> serde_json::Value {
     hook_installer::get_hook_status()
 }
 
+#[tauri::command]
+fn get_app_config() -> AppConfig {
+    AppConfig::load()
+}
+
+#[tauri::command]
+fn save_app_config(config: AppConfig) -> Result<(), String> {
+    config.save()
+}
+
+#[tauri::command]
+fn get_autostart_enabled(app: AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())
+    } else {
+        manager.disable().map_err(|e| e.to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -276,6 +303,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Hide instead of quit — the app keeps running in the tray so
@@ -331,7 +362,10 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            let ws_server = Arc::new(WsServer::new(WS_PORT));
+            let app_config = AppConfig::load();
+            let ws_port = app_config.ws_port;
+
+            let ws_server = Arc::new(WsServer::new(ws_port));
             let auth_manager = Arc::new(AuthManager::new());
             let log_store = LogStore::new();
 
@@ -354,10 +388,10 @@ pub fn run() {
                     log::error!("Failed to start WebSocket server: {}", e);
                     return;
                 }
-                info!("WebSocket server started on port {}", WS_PORT);
+                info!("WebSocket server started on port {}", ws_port);
 
                 // Start mDNS
-                match MdnsServer::new(WS_PORT) {
+                match MdnsServer::new(ws_port) {
                     Ok(_mdns) => {
                         info!("mDNS service registered");
                         // Keep mdns alive by leaking it (it's a daemon)
@@ -398,6 +432,10 @@ pub fn run() {
             install_hooks,
             uninstall_hooks,
             get_hook_status,
+            get_app_config,
+            save_app_config,
+            get_autostart_enabled,
+            set_autostart_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
