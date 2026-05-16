@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   ActivityIcon,
   AlertIcon,
+  CheckIcon,
   DeviceIcon,
   FileIcon,
   GitIcon,
@@ -12,6 +14,7 @@ import {
   SparkleIcon,
   TerminalIcon,
   TrashIcon,
+  XIcon,
   ZapIcon,
 } from "./Icons";
 
@@ -109,6 +112,25 @@ function Dashboard({ pendingRequests, connectedCount, onMockRequest }: Dashboard
       else next.add(id);
       return next;
     });
+  };
+
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+
+  const handleDecide = async (id: string, decision: "approve" | "reject") => {
+    if (busy.has(id)) return;
+    setBusy((prev) => new Set(prev).add(id));
+    try {
+      await invoke(decision === "approve" ? "approve_request" : "reject_request", {
+        requestId: id,
+      });
+    } catch (e) {
+      console.error(`Failed to ${decision}:`, e);
+      setBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   };
 
   return (
@@ -251,6 +273,26 @@ function Dashboard({ pendingRequests, connectedCount, onMockRequest }: Dashboard
                       )}
                     </div>
                   )}
+                  <div className="request-actions">
+                    <button
+                      className="btn-decision btn-reject"
+                      disabled={busy.has(req.request_id)}
+                      onClick={() => handleDecide(req.request_id, "reject")}
+                      aria-label="在桌面端拒绝"
+                    >
+                      <XIcon size={13} />
+                      拒绝
+                    </button>
+                    <button
+                      className="btn-decision btn-approve"
+                      disabled={busy.has(req.request_id)}
+                      onClick={() => handleDecide(req.request_id, "approve")}
+                      aria-label="在桌面端允许"
+                    >
+                      <CheckIcon size={13} />
+                      允许
+                    </button>
+                  </div>
                 </div>
               );
             })}

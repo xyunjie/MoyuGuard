@@ -158,6 +158,44 @@ async fn clear_log(state: tauri::State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn approve_request(
+    request_id: String,
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let reason = "approved on desktop".to_string();
+    if let Some(req) = state.auth_manager
+        .resolve(&request_id, Decision::Approved, reason.clone())
+        .await
+    {
+        record_log(&state.log_store, &app, &req, Decision::Approved, &reason).await;
+        let _ = app.emit("auth-resolved", &request_id);
+        Ok(())
+    } else {
+        Err(format!("Request {} not found or already resolved", request_id))
+    }
+}
+
+#[tauri::command]
+async fn reject_request(
+    request_id: String,
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let reason = "rejected on desktop".to_string();
+    if let Some(req) = state.auth_manager
+        .resolve(&request_id, Decision::Rejected, reason.clone())
+        .await
+    {
+        record_log(&state.log_store, &app, &req, Decision::Rejected, &reason).await;
+        let _ = app.emit("auth-resolved", &request_id);
+        Ok(())
+    } else {
+        Err(format!("Request {} not found or already resolved", request_id))
+    }
+}
+
+#[tauri::command]
 async fn send_mock_request(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
@@ -354,6 +392,8 @@ pub fn run() {
             get_pending_requests,
             get_log_entries,
             clear_log,
+            approve_request,
+            reject_request,
             send_mock_request,
             install_hooks,
             uninstall_hooks,

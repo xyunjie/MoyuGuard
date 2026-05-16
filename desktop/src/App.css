@@ -591,6 +591,63 @@ button {
   background: var(--bg-elevated);
 }
 
+.request-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.btn-decision {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  border: 1px solid;
+}
+
+.btn-decision.btn-approve {
+  background: var(--success);
+  border-color: var(--success);
+  color: white;
+}
+
+.btn-decision.btn-approve:hover:not(:disabled) {
+  background: #0d9668;
+  border-color: #0d9668;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+}
+
+.btn-decision.btn-reject {
+  background: transparent;
+  border-color: var(--border-default);
+  color: var(--text-secondary);
+}
+
+.btn-decision.btn-reject:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-decision:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-decision:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .request-details {
   margin-top: var(--space-3);
   display: flex;
