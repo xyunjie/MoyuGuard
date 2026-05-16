@@ -29,10 +29,64 @@ interface AuthRequest {
   timeout_seconds: number;
 }
 
+interface PairPendingEvent {
+  client_id: string;
+  device_name: string;
+  device_id: string;
+  platform: string;
+}
+
+function PlatformIcon({ platform }: { platform: string }) {
+  if (platform === "ios") return <span>📱</span>;
+  if (platform === "android") return <span>🤖</span>;
+  if (platform === "web") return <span>🌐</span>;
+  return <span>📱</span>;
+}
+
+function PairDialog({
+  request,
+  onApprove,
+  onReject,
+}: {
+  request: PairPendingEvent;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <div className="pair-overlay">
+      <div className="pair-dialog">
+        <div className="pair-dialog-icon">
+          <PlatformIcon platform={request.platform} />
+        </div>
+        <h3 className="pair-dialog-title">配对请求</h3>
+        <p className="pair-dialog-desc">
+          一台新设备请求连接到 MoyuGuard
+        </p>
+        <div className="pair-dialog-device">
+          <div className="pair-device-name">{request.device_name}</div>
+          <div className="pair-device-meta">{request.platform} · {request.device_id.slice(0, 8)}…</div>
+        </div>
+        <p className="pair-dialog-warn">
+          允许后该设备可以审批所有 AI 操作请求
+        </p>
+        <div className="pair-dialog-actions">
+          <button className="btn-pair-reject" onClick={onReject}>
+            拒绝
+          </button>
+          <button className="btn-pair-approve" onClick={onApprove}>
+            允许配对
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [connectedCount, setConnectedCount] = useState(0);
   const [pendingRequests, setPendingRequests] = useState<AuthRequest[]>([]);
+  const [pairQueue, setPairQueue] = useState<PairPendingEvent[]>([]);
 
   useEffect(() => {
     const pollStatus = async () => {
@@ -65,11 +119,16 @@ function App() {
       }
     );
 
+    const unlistenPair = listen<PairPendingEvent>("pair-pending", (event) => {
+      setPairQueue((prev) => [...prev, event.payload]);
+    });
+
     return () => {
       clearInterval(interval);
       unlistenAuth.then((f) => f());
       unlistenResolved.then((f) => f());
       unlistenConnection.then((f) => f());
+      unlistenPair.then((f) => f());
     };
   }, []);
 
@@ -81,8 +140,36 @@ function App() {
     }
   };
 
+  const handlePairApprove = async (req: PairPendingEvent) => {
+    try {
+      await invoke("approve_pair", { clientId: req.client_id });
+    } catch (e) {
+      console.error("Failed to approve pair:", e);
+    }
+    setPairQueue((prev) => prev.filter((r) => r.client_id !== req.client_id));
+  };
+
+  const handlePairReject = async (req: PairPendingEvent) => {
+    try {
+      await invoke("reject_pair", { clientId: req.client_id });
+    } catch (e) {
+      console.error("Failed to reject pair:", e);
+    }
+    setPairQueue((prev) => prev.filter((r) => r.client_id !== req.client_id));
+  };
+
+  const currentPair = pairQueue[0] ?? null;
+
   return (
     <div className="app">
+      {currentPair && (
+        <PairDialog
+          request={currentPair}
+          onApprove={() => handlePairApprove(currentPair)}
+          onReject={() => handlePairReject(currentPair)}
+        />
+      )}
+
       <header className="app-header">
         <div className="brand">
           <div className="brand-icon">
@@ -118,11 +205,14 @@ function App() {
           授权日志
         </button>
         <button
-          className={tab === "settings" ? "active" : ""}
+          className={`${tab === "settings" ? "active" : ""}`}
           onClick={() => setTab("settings")}
         >
           <SettingsIcon size={14} />
           设置
+          {pairQueue.length > 0 && (
+            <span className="tab-count">{pairQueue.length}</span>
+          )}
         </button>
       </nav>
 

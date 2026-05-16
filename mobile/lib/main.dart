@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'services/connection_service.dart';
 import 'screens/scan_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/pairing_screen.dart';
 
 void main() {
   runApp(
@@ -37,10 +38,16 @@ class MoyuGuardApp extends StatelessWidget {
       ),
       home: Consumer<ConnectionService>(
         builder: (context, service, _) {
-          if (service.isConnected) {
-            return const HomeScreen();
+          if (!service.isConnected) {
+            return const ScanScreen();
           }
-          return const ScanScreen();
+          if (service.pairState == PairState.waiting) {
+            return const PairingScreen();
+          }
+          if (service.pairState == PairState.rejected) {
+            return const PairingScreen(rejected: true);
+          }
+          return const HomeScreen();
         },
       ),
     );

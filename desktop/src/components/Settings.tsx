@@ -20,7 +20,19 @@ interface AppConfig {
   ws_port: number;
 }
 
+interface TrustedClient {
+  device_id: string;
+  device_name: string;
+  platform: string;
+  paired_at: number;
+}
+
 const DEFAULT_PORT = 9876;
+
+function PlatformLabel({ platform }: { platform: string }) {
+  const icons: Record<string, string> = { ios: "📱 iOS", android: "🤖 Android", web: "🌐 Web", mobile: "📱 Mobile" };
+  return <span>{icons[platform] ?? `📱 ${platform}`}</span>;
+}
 
 function Settings() {
   const [hookStatus, setHookStatus] = useState<HookStatus>({ claude_code: false, codex: false });
@@ -30,6 +42,7 @@ function Settings() {
   const [wsPort, setWsPort] = useState<number>(DEFAULT_PORT);
   const [portInput, setPortInput] = useState<string>(String(DEFAULT_PORT));
   const [autostart, setAutostart] = useState<boolean>(false);
+  const [trustedClients, setTrustedClients] = useState<TrustedClient[]>([]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -50,6 +63,12 @@ function Settings() {
       setAutostart(enabled);
     } catch (e) {
       console.error("Failed to get autostart status:", e);
+    }
+    try {
+      const clients = await invoke<TrustedClient[]>("get_trusted_clients");
+      setTrustedClients(clients);
+    } catch (e) {
+      console.error("Failed to get trusted clients:", e);
     }
   }, []);
 
@@ -123,6 +142,16 @@ function Settings() {
     }
   };
 
+  const handleRemoveTrusted = async (deviceId: string, deviceName: string) => {
+    try {
+      await invoke("remove_trusted_client", { deviceId });
+      setTrustedClients((prev) => prev.filter((c) => c.device_id !== deviceId));
+      showMessage(`已移除设备：${deviceName}`, "success");
+    } catch (e) {
+      showMessage(String(e), "error");
+    }
+  };
+
   return (
     <div className="settings-page">
       <h2>
@@ -151,9 +180,7 @@ function Settings() {
               </div>
               Claude Code
             </div>
-            <span
-              className={`hook-status-badge ${hookStatus.claude_code ? "installed" : ""}`}
-            >
+            <span className={`hook-status-badge ${hookStatus.claude_code ? "installed" : ""}`}>
               {hookStatus.claude_code && <CheckIcon size={11} />}
               {hookStatus.claude_code ? "已安装" : "未安装"}
             </span>
@@ -265,6 +292,39 @@ function Settings() {
           </button>
         </div>
       </div>
+
+      <h2 style={{ marginTop: 32 }}>
+        <CheckIcon size={15} />
+        已信任设备
+      </h2>
+      <p className="settings-desc">
+        以下设备已完成配对，可以直接连接并审批操作。移除后需重新配对。
+      </p>
+
+      {trustedClients.length === 0 ? (
+        <div className="trusted-empty">暂无已信任设备</div>
+      ) : (
+        <div className="trusted-list">
+          {trustedClients.map((c) => (
+            <div key={c.device_id} className="trusted-item">
+              <div className="trusted-item-info">
+                <div className="trusted-item-name">{c.device_name}</div>
+                <div className="trusted-item-meta">
+                  <PlatformLabel platform={c.platform} />
+                  <span> · {new Date(c.paired_at).toLocaleDateString()}</span>
+                </div>
+              </div>
+              <button
+                className="btn-trusted-remove"
+                onClick={() => handleRemoveTrusted(c.device_id, c.device_name)}
+                title="移除信任"
+              >
+                <TrashIcon size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

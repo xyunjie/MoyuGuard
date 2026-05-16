@@ -1,23 +1,41 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/auth_request.dart';
+
+enum PairState { idle, waiting, rejected }
 
 class ConnectionService extends ChangeNotifier {
   WebSocketChannel? _channel;
   String? _serverAddress;
   String? _computerName;
   bool _isConnected = false;
+  PairState _pairState = PairState.idle;
   final List<AuthRequest> _pendingRequests = [];
   final List<String> _log = [];
   Timer? _heartbeatTimer;
+  String? _deviceId;
 
   bool get isConnected => _isConnected;
+  PairState get pairState => _pairState;
   String? get serverAddress => _serverAddress;
   String? get computerName => _computerName;
   List<AuthRequest> get pendingRequests => List.unmodifiable(_pendingRequests);
   List<String> get log => List.unmodifiable(_log);
+
+  Future<String> _getDeviceId() async {
+    if (_deviceId != null) return _deviceId!;
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString('device_id');
+    if (id == null) {
+      id = 'flutter-${DateTime.now().millisecondsSinceEpoch}';
+      await prefs.setString('device_id', id);
+    }
+    _deviceId = id;
+    return id;
+  }
 
   Future<void> connect(String host, int port) async {
     try {
@@ -27,23 +45,25 @@ class ConnectionService extends ChangeNotifier {
 
       _serverAddress = '$host:$port';
       _isConnected = true;
+      _pairState = PairState.waiting;
       notifyListeners();
 
       _startHeartbeat();
       _listenMessages();
 
-      // Send pair_request immediately so the desktop returns pair_response
-      // with its computer name and treats us as a registered client.
+      final deviceId = await _getDeviceId();
       _channel?.sink.add(jsonEncode({
         'type': 'pair_request',
+        'device_id': deviceId,
         'device_name': kIsWeb ? 'Flutter Web' : 'Flutter Mobile',
         'platform': kIsWeb ? 'web' : 'mobile',
       }));
 
-      _addLog('已连接到 $host:$port');
+      _addLog('已连接到 $host:$port，等待配对确认…');
     } catch (e) {
       _addLog('连接失败: $e');
       _isConnected = false;
+      _pairState = PairState.idle;
       notifyListeners();
     }
   }
@@ -51,7 +71,6 @@ class ConnectionService extends ChangeNotifier {
   void _listenMessages() {
     _channel?.stream.listen(
       (data) {
-        // MVP: 使用 JSON 简化调试，后续切换为 Protobuf
         if (data is String) {
           _handleJsonMessage(data);
         }
@@ -73,6 +92,7 @@ class ConnectionService extends ChangeNotifier {
       final type = msg['type'] as String?;
 
       if (type == 'auth_request') {
+        if (_pairState != PairState.idle) return; // only trusted clients reach here
         final req = AuthRequest(
           requestId: msg['request_id'] ?? '',
           toolName: msg['tool_name'] ?? 'unknown',
@@ -90,8 +110,15 @@ class ConnectionService extends ChangeNotifier {
         _addLog('收到授权请求: ${req.toolDisplayName} - ${req.summary}');
         notifyListeners();
       } else if (type == 'pair_response') {
-        _computerName = msg['computer_name'];
-        _addLog('配对成功: $_computerName');
+        final accepted = msg['accepted'] as bool? ?? false;
+        if (accepted) {
+          _computerName = msg['computer_name'];
+          _pairState = PairState.idle;
+          _addLog('配对成功: $_computerName');
+        } else {
+          _pairState = PairState.rejected;
+          _addLog('配对被拒绝');
+        }
         notifyListeners();
       }
     } catch (e) {
@@ -127,6 +154,7 @@ class ConnectionService extends ChangeNotifier {
     _channel?.sink.close();
     _channel = null;
     _isConnected = false;
+    _pairState = PairState.idle;
     _serverAddress = null;
     _computerName = null;
     _pendingRequests.clear();

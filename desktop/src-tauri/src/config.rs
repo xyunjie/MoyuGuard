@@ -5,9 +5,19 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_WS_PORT: u16 = 9876;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TrustedClient {
+    pub device_id: String,
+    pub device_name: String,
+    pub platform: String,
+    pub paired_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     #[serde(default = "default_ws_port")]
     pub ws_port: u16,
+    #[serde(default)]
+    pub trusted_clients: Vec<TrustedClient>,
 }
 
 fn default_ws_port() -> u16 {
@@ -18,6 +28,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             ws_port: DEFAULT_WS_PORT,
+            trusted_clients: Vec::new(),
         }
     }
 }

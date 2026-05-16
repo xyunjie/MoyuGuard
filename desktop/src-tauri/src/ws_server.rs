@@ -20,7 +20,10 @@ pub enum ClientProtocol {
 struct Client {
     tx: mpsc::UnboundedSender<tungstenite::Message>,
     device_name: String,
+    device_id: String,
+    platform: String,
     protocol: ClientProtocol,
+    trusted: bool,
 }
 
 pub struct WsServer {
@@ -89,7 +92,10 @@ impl WsServer {
             Client {
                 tx,
                 device_name: "Unknown".to_string(),
+                device_id: String::new(),
+                platform: String::new(),
                 protocol: ClientProtocol::Protobuf,
+                trusted: false,
             },
         );
 
@@ -139,6 +145,36 @@ impl WsServer {
         clients.write().await.remove(&client_id);
         send_task.abort();
         info!("Client disconnected: {}", cid);
+    }
+
+    pub async fn set_client_info(&self, client_id: &str, device_id: String, device_name: String, platform: String) {
+        if let Some(c) = self.clients.write().await.get_mut(client_id) {
+            c.device_id = device_id;
+            c.device_name = device_name;
+            c.platform = platform;
+        }
+    }
+
+    pub async fn set_trusted(&self, client_id: &str, trusted: bool) {
+        if let Some(c) = self.clients.write().await.get_mut(client_id) {
+            c.trusted = trusted;
+        }
+    }
+
+    pub async fn is_trusted(&self, client_id: &str) -> bool {
+        self.clients.read().await.get(client_id).map_or(false, |c| c.trusted)
+    }
+
+    pub async fn get_client_info(&self, client_id: &str) -> Option<(String, String, String)> {
+        self.clients.read().await.get(client_id).map(|c| {
+            (c.device_id.clone(), c.device_name.clone(), c.platform.clone())
+        })
+    }
+
+    pub async fn disconnect_client(&self, client_id: &str) {
+        if let Some(c) = self.clients.read().await.get(client_id) {
+            let _ = c.tx.send(tungstenite::Message::Close(None));
+        }
     }
 
     pub async fn send_to_json(&self, client_id: &str, json: &serde_json::Value) -> bool {

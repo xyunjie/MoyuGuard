@@ -16,20 +16,21 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, WindowEvent,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 
 use auth::AuthManager;
+use config::{AppConfig, TrustedClient};
 use hook_server::HookServer;
 use log_store::{LogEntry, LogStore};
 use mdns::MdnsServer;
 use proto::proto::*;
 use ws_server::{IncomingMessage, WsServer};
-use config::AppConfig;
 
 struct AppState {
     ws_server: Arc<WsServer>,
     auth_manager: Arc<AuthManager>,
     log_store: Arc<LogStore>,
+    config: Arc<RwLock<AppConfig>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -57,6 +58,14 @@ struct AuthRequestEvent {
 #[derive(Serialize, Clone)]
 struct ConnectionEvent {
     connected_count: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct PairPendingEvent {
+    client_id: String,
+    device_name: String,
+    device_id: String,
+    platform: String,
 }
 
 fn operation_name(op: i32) -> &'static str {
@@ -195,6 +204,66 @@ async fn reject_request(
     }
 }
 
+/// Called by the desktop UI when the user approves a pairing request.
+#[tauri::command]
+async fn approve_pair(
+    client_id: String,
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    if let Some((device_id, device_name, platform)) = state.ws_server.get_client_info(&client_id).await {
+        state.ws_server.set_trusted(&client_id, true).await;
+
+        // Persist to config
+        let mut cfg = state.config.write().await;
+        if !cfg.trusted_clients.iter().any(|c| c.device_id == device_id) {
+            cfg.trusted_clients.push(TrustedClient {
+                device_id: device_id.clone(),
+                device_name: device_name.clone(),
+                platform: platform.clone(),
+                paired_at: chrono::Utc::now().timestamp_millis(),
+            });
+            cfg.save().map_err(|e| e.to_string())?;
+        }
+
+        send_pair_accept(&client_id, &state.ws_server, &app).await;
+        info!("Pairing approved for {} ({})", device_name, device_id);
+        Ok(())
+    } else {
+        Err(format!("Client {} not found", client_id))
+    }
+}
+
+/// Called by the desktop UI when the user rejects a pairing request.
+#[tauri::command]
+async fn reject_pair(
+    client_id: String,
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    send_pair_reject(&client_id, &state.ws_server).await;
+    state.ws_server.disconnect_client(&client_id).await;
+    let count = state.ws_server.connected_count().await;
+    let _ = app.emit("connection-changed", ConnectionEvent { connected_count: count });
+    info!("Pairing rejected for client {}", client_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_trusted_clients(state: tauri::State<'_, AppState>) -> Result<Vec<TrustedClient>, String> {
+    Ok(state.config.read().await.trusted_clients.clone())
+}
+
+#[tauri::command]
+async fn remove_trusted_client(
+    device_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut cfg = state.config.write().await;
+    cfg.trusted_clients.retain(|c| c.device_id != device_id);
+    cfg.save().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn send_mock_request(
     state: tauri::State<'_, AppState>,
@@ -270,13 +339,15 @@ fn get_hook_status() -> serde_json::Value {
 }
 
 #[tauri::command]
-fn get_app_config() -> AppConfig {
-    AppConfig::load()
+async fn get_app_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
+    Ok(state.config.read().await.clone())
 }
 
 #[tauri::command]
-fn save_app_config(config: AppConfig) -> Result<(), String> {
-    config.save()
+async fn save_app_config(config: AppConfig, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut cfg = state.config.write().await;
+    cfg.ws_port = config.ws_port;
+    cfg.save()
 }
 
 #[tauri::command]
@@ -309,14 +380,11 @@ pub fn run() {
         ))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Hide instead of quit — the app keeps running in the tray so
-                // hook requests still get answered when the window is closed.
                 window.hide().ok();
                 api.prevent_close();
             }
         })
         .setup(|app| {
-            // System tray with show / quit menu items
             let show_item = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出 MoyuGuard", true, None::<&str>)?;
@@ -342,7 +410,6 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    // Left-click toggles the main window visibility
                     if let tauri::tray::TrayIconEvent::Click {
                         button: tauri::tray::MouseButton::Left,
                         button_state: tauri::tray::MouseButtonState::Up,
@@ -368,11 +435,13 @@ pub fn run() {
             let ws_server = Arc::new(WsServer::new(ws_port));
             let auth_manager = Arc::new(AuthManager::new());
             let log_store = LogStore::new();
+            let config = Arc::new(RwLock::new(app_config));
 
             let state = AppState {
                 ws_server: ws_server.clone(),
                 auth_manager: auth_manager.clone(),
                 log_store: log_store.clone(),
+                config: config.clone(),
             };
             app.manage(state);
 
@@ -390,17 +459,14 @@ pub fn run() {
                 }
                 info!("WebSocket server started on port {}", ws_port);
 
-                // Start mDNS
                 match MdnsServer::new(ws_port) {
                     Ok(_mdns) => {
                         info!("mDNS service registered");
-                        // Keep mdns alive by leaking it (it's a daemon)
                         std::mem::forget(_mdns);
                     }
                     Err(e) => log::error!("Failed to start mDNS: {}", e),
                 }
 
-                // Start Hook Server (Unix Socket)
                 let hook_server = HookServer::new();
                 info!("Hook socket path: {}", hook_server.socket_path());
                 if let Err(e) = hook_server.start(am.clone(), ws.clone(), app_handle.clone()).await {
@@ -410,10 +476,10 @@ pub fn run() {
                 while let Some((client_id, incoming)) = msg_rx.recv().await {
                     match incoming {
                         IncomingMessage::Proto(envelope) => {
-                            handle_proto_message(&client_id, envelope, &ws, &am, &ls, &app_handle).await;
+                            handle_proto_message(&client_id, envelope, &ws, &am, &ls, &config, &app_handle).await;
                         }
                         IncomingMessage::Json(json) => {
-                            handle_json_message(&client_id, json, &ws, &am, &ls, &app_handle).await;
+                            handle_json_message(&client_id, json, &ws, &am, &ls, &config, &app_handle).await;
                         }
                     }
                 }
@@ -428,6 +494,10 @@ pub fn run() {
             clear_log,
             approve_request,
             reject_request,
+            approve_pair,
+            reject_pair,
+            get_trusted_clients,
+            remove_trusted_client,
             send_mock_request,
             install_hooks,
             uninstall_hooks,
@@ -441,16 +511,54 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+async fn handle_pair_request(
+    client_id: &str,
+    device_id: &str,
+    device_name: &str,
+    platform: &str,
+    ws: &Arc<WsServer>,
+    config: &Arc<RwLock<AppConfig>>,
+    app_handle: &AppHandle,
+) {
+    ws.set_client_info(client_id, device_id.to_string(), device_name.to_string(), platform.to_string()).await;
+
+    let is_known = config.read().await.trusted_clients.iter().any(|c| c.device_id == device_id);
+
+    if is_known {
+        info!("Auto-accepting known device: {} ({})", device_name, device_id);
+        ws.set_trusted(client_id, true).await;
+        send_pair_accept(client_id, ws, app_handle).await;
+    } else {
+        info!("Pending pair from unknown device: {} ({})", device_name, device_id);
+        let _ = app_handle.emit("pair-pending", PairPendingEvent {
+            client_id: client_id.to_string(),
+            device_name: device_name.to_string(),
+            device_id: device_id.to_string(),
+            platform: platform.to_string(),
+        });
+        // Show window so the user sees the dialog
+        if let Some(window) = app_handle.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
 async fn handle_proto_message(
     client_id: &str,
     envelope: Envelope,
     ws: &Arc<WsServer>,
     am: &Arc<AuthManager>,
     ls: &Arc<LogStore>,
+    config: &Arc<RwLock<AppConfig>>,
     app_handle: &AppHandle,
 ) {
     match MessageType::try_from(envelope.r#type) {
         Ok(MessageType::AuthResponse) => {
+            if !ws.is_trusted(client_id).await {
+                log::warn!("Ignoring auth_response from untrusted client {}", client_id);
+                return;
+            }
             if let Some(envelope::Payload::AuthResponse(resp)) = envelope.payload {
                 let decision = Decision::try_from(resp.decision)
                     .unwrap_or(Decision::Unspecified);
@@ -465,8 +573,12 @@ async fn handle_proto_message(
         }
         Ok(MessageType::PairRequest) => {
             if let Some(envelope::Payload::PairRequest(req)) = envelope.payload {
-                info!("Pair request from: {} ({})", req.device_name, req.platform);
-                send_pair_response(client_id, ws, app_handle).await;
+                let device_id = if req.device_id.is_empty() {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    req.device_id.clone()
+                };
+                handle_pair_request(client_id, &device_id, &req.device_name, &req.platform, ws, config, app_handle).await;
             }
         }
         _ => {}
@@ -479,6 +591,7 @@ async fn handle_json_message(
     ws: &Arc<WsServer>,
     am: &Arc<AuthManager>,
     ls: &Arc<LogStore>,
+    config: &Arc<RwLock<AppConfig>>,
     app_handle: &AppHandle,
 ) {
     let msg_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -487,10 +600,17 @@ async fn handle_json_message(
         "pair_request" => {
             let device_name = json.get("device_name").and_then(|v| v.as_str()).unwrap_or("Unknown");
             let platform = json.get("platform").and_then(|v| v.as_str()).unwrap_or("unknown");
-            info!("JSON pair request from: {} ({})", device_name, platform);
-            send_pair_response(client_id, ws, app_handle).await;
+            let device_id = json.get("device_id").and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            handle_pair_request(client_id, &device_id, device_name, platform, ws, config, app_handle).await;
         }
         "auth_response" => {
+            if !ws.is_trusted(client_id).await {
+                log::warn!("Ignoring auth_response from untrusted client {}", client_id);
+                return;
+            }
             let request_id = json.get("request_id").and_then(|v| v.as_str()).unwrap_or("");
             let decision_str = json.get("decision").and_then(|v| v.as_str()).unwrap_or("");
             let reason = json.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -543,23 +663,35 @@ async fn record_log(
     let _ = app_handle.emit("log-appended", &entry);
 }
 
-async fn send_pair_response(client_id: &str, ws: &Arc<WsServer>, app_handle: &AppHandle) {
+async fn send_pair_accept(client_id: &str, ws: &Arc<WsServer>, app_handle: &AppHandle) {
     let response = Envelope {
         message_id: uuid::Uuid::new_v4().to_string(),
         timestamp: chrono::Utc::now().timestamp_millis() as u64,
         r#type: MessageType::PairResponse.into(),
         payload: Some(envelope::Payload::PairResponse(PairResponse {
             accepted: true,
-            computer_name: gethostname::gethostname()
-                .to_string_lossy()
-                .to_string(),
+            computer_name: gethostname::gethostname().to_string_lossy().to_string(),
             computer_id: uuid::Uuid::new_v4().to_string(),
             session_token: uuid::Uuid::new_v4().to_string(),
         })),
     };
     ws.send_to(client_id, &response).await;
     let count = ws.connected_count().await;
-    let _ = app_handle.emit("connection-changed", ConnectionEvent {
-        connected_count: count,
-    });
+    let _ = app_handle.emit("connection-changed", ConnectionEvent { connected_count: count });
 }
+
+async fn send_pair_reject(client_id: &str, ws: &Arc<WsServer>) {
+    let response = Envelope {
+        message_id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        r#type: MessageType::PairResponse.into(),
+        payload: Some(envelope::Payload::PairResponse(PairResponse {
+            accepted: false,
+            computer_name: String::new(),
+            computer_id: String::new(),
+            session_token: String::new(),
+        })),
+    };
+    ws.send_to(client_id, &response).await;
+}
+
