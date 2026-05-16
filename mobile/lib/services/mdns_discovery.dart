@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:nsd/nsd.dart';
 
 class DiscoveredDevice {
@@ -24,6 +25,9 @@ class MdnsDiscovery {
   Future<void> startScan() async {
     _devices.clear();
     _devicesController.add(_devices);
+
+    // Web has no mDNS; the UI falls back to manual host:port entry.
+    if (kIsWeb) return;
 
     _discovery = await startDiscovery('_moyuguard._tcp');
     _discovery!.addServiceListener((service, status) {

@@ -32,6 +32,14 @@ class ConnectionService extends ChangeNotifier {
       _startHeartbeat();
       _listenMessages();
 
+      // Send pair_request immediately so the desktop returns pair_response
+      // with its computer name and treats us as a registered client.
+      _channel?.sink.add(jsonEncode({
+        'type': 'pair_request',
+        'device_name': kIsWeb ? 'Flutter Web' : 'Flutter Mobile',
+        'platform': kIsWeb ? 'web' : 'mobile',
+      }));
+
       _addLog('已连接到 $host:$port');
     } catch (e) {
       _addLog('连接失败: $e');

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/connection_service.dart';
@@ -13,7 +14,7 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> {
   final _mdns = MdnsDiscovery();
-  final _hostController = TextEditingController();
+  final _hostController = TextEditingController(text: kIsWeb ? '127.0.0.1' : '');
   final _portController = TextEditingController(text: '9876');
   bool _isScanning = false;
   bool _isConnecting = false;
@@ -27,6 +28,7 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   Future<void> _startScan() async {
+    if (kIsWeb) return;
     setState(() => _isScanning = true);
     try {
       await _mdns.startScan();
@@ -79,7 +81,7 @@ class _ScanScreenState extends State<ScanScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                '扫描局域网中的电脑...',
+                kIsWeb ? '请手动输入电脑端 IP 和端口' : '扫描局域网中的电脑...',
                 style: TextStyle(
                   fontSize: 14,
                   color: Colors.grey[500],
