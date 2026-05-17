@@ -118,6 +118,17 @@ class ConnectionService extends ChangeNotifier {
         _addLog('收到授权请求: ${req.toolDisplayName} - ${req.summary}');
         notifyListeners();
         _updateLiveActivity();
+      } else if (type == 'auth_resolved') {
+        final requestId = msg['request_id'] as String?;
+        if (requestId != null) {
+          final removed = _pendingRequests.any((r) => r.requestId == requestId);
+          _pendingRequests.removeWhere((r) => r.requestId == requestId);
+          if (removed) {
+            _addLog('请求已在其他设备处理: $requestId');
+            notifyListeners();
+            _updateLiveActivity();
+          }
+        }
       } else if (type == 'pair_response') {
         final accepted = msg['accepted'] as bool? ?? false;
         if (accepted) {

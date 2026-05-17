@@ -179,6 +179,10 @@ async fn approve_request(
     {
         record_log(&state.log_store, &app, &req, Decision::Approved, &reason).await;
         let _ = app.emit("auth-resolved", &request_id);
+        state.ws_server.broadcast_json(&serde_json::json!({
+            "type": "auth_resolved",
+            "request_id": request_id,
+        })).await;
         Ok(())
     } else {
         Err(format!("Request {} not found or already resolved", request_id))
@@ -198,6 +202,10 @@ async fn reject_request(
     {
         record_log(&state.log_store, &app, &req, Decision::Rejected, &reason).await;
         let _ = app.emit("auth-resolved", &request_id);
+        state.ws_server.broadcast_json(&serde_json::json!({
+            "type": "auth_resolved",
+            "request_id": request_id,
+        })).await;
         Ok(())
     } else {
         Err(format!("Request {} not found or already resolved", request_id))
@@ -566,6 +574,10 @@ async fn handle_proto_message(
                     record_log(ls, app_handle, &req, decision, &resp.reason).await;
                 }
                 let _ = app_handle.emit("auth-resolved", &resp.request_id);
+                ws.broadcast_json(&serde_json::json!({
+                    "type": "auth_resolved",
+                    "request_id": resp.request_id,
+                })).await;
             }
         }
         Ok(MessageType::Heartbeat) => {
@@ -626,6 +638,10 @@ async fn handle_json_message(
                 record_log(ls, app_handle, &req, decision, &reason).await;
             }
             let _ = app_handle.emit("auth-resolved", request_id);
+            ws.broadcast_json(&serde_json::json!({
+                "type": "auth_resolved",
+                "request_id": request_id,
+            })).await;
         }
         "heartbeat" => {
             info!("JSON heartbeat from {}", client_id);

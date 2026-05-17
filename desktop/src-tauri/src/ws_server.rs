@@ -221,6 +221,13 @@ impl WsServer {
         }
     }
 
+    pub async fn broadcast_json(&self, json: &serde_json::Value) {
+        let text = serde_json::to_string(json).unwrap_or_default();
+        for client in self.clients.read().await.values() {
+            let _ = client.tx.send(tungstenite::Message::Text(text.clone().into()));
+        }
+    }
+
     pub async fn connected_count(&self) -> usize {
         self.clients.read().await.len()
     }
