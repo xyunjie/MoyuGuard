@@ -1,15 +1,20 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use log::{info, warn, error};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as TokioMutex, RwLock};
 
 use crate::auth::AuthManager;
 use crate::config::AppConfig;
 use crate::proto::proto::*;
 use crate::ws_server::WsServer;
+
+/// Maps (session_id, tool_name) → request_id for pending PermissionRequests.
+/// Used to detect when Claude Code resolves a permission in the terminal
+/// (via PostToolUse) so we can clean up the pending UI entry.
+type SessionMap = Arc<TokioMutex<HashMap<(String, String), String>>>;
 
 /// Always auto-approve pure read-only ops regardless of user config.
 fn builtin_auto_approve(tool: &str) -> bool {
@@ -62,6 +67,8 @@ impl HookServer {
 
         info!("Hook server listening on {}", self.socket_path);
 
+        let session_map: SessionMap = Arc::new(TokioMutex::new(HashMap::new()));
+
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
@@ -70,8 +77,9 @@ impl HookServer {
                         let ws = ws_server.clone();
                         let app = app_handle.clone();
                         let cfg = config.clone();
+                        let sm = session_map.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, am, ws, app, cfg).await {
+                            if let Err(e) = handle_connection(stream, am, ws, app, cfg, sm).await {
                                 warn!("Hook connection error: {}", e);
                             }
                         });
@@ -97,6 +105,7 @@ async fn handle_connection(
     ws_server: Arc<WsServer>,
     app_handle: tauri::AppHandle,
     config: Arc<RwLock<AppConfig>>,
+    session_map: SessionMap,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut buf = Vec::with_capacity(65536);
     let mut tmp = [0u8; 65536];
@@ -131,8 +140,28 @@ async fn handle_connection(
     // CodeIsland routing: only PermissionRequest blocks; everything else is
     // fire-and-forget (emit telemetry to UI and return {} immediately).
     if event.event_name == "PermissionRequest" {
-        handle_permission_request(stream, event, auth_manager, ws_server, app_handle, config).await?;
+        handle_permission_request(stream, event, auth_manager, ws_server, app_handle, config, session_map).await?;
     } else {
+        // PostToolUse signals that the tool actually executed — which means
+        // Claude Code resolved the permission in the terminal before our hook
+        // could respond. Auto-resolve the matching pending request so the
+        // desktop and mobile UIs clean up immediately.
+        if event.event_name == "PostToolUse" {
+            if let Some(tool_name) = &event.tool_name {
+                let key = (event.session_id.clone(), tool_name.clone());
+                let maybe_rid = session_map.lock().await.remove(&key);
+                if let Some(request_id) = maybe_rid {
+                    info!("PostToolUse detected terminal approval for request {}", request_id);
+                    auth_manager.resolve(&request_id, Decision::Approved, "approved via terminal".to_string()).await;
+                    use tauri::Emitter;
+                    let _ = app_handle.emit("auth-resolved", &request_id);
+                    ws_server.broadcast_json(&serde_json::json!({
+                        "type": "auth_resolved",
+                        "request_id": request_id,
+                    })).await;
+                }
+            }
+        }
         notify_event(&event, &app_handle);
         stream.write_all(b"{}").await?;
         stream.shutdown().await?;
@@ -148,6 +177,7 @@ async fn handle_permission_request(
     ws_server: Arc<WsServer>,
     app_handle: tauri::AppHandle,
     config: Arc<RwLock<AppConfig>>,
+    session_map: SessionMap,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tool_name = event.tool_name.clone().unwrap_or_default();
     let tool_input = event.tool_input.clone().unwrap_or(serde_json::json!({}));
@@ -230,6 +260,12 @@ async fn handle_permission_request(
         .show();
 
     let mut rx = auth_manager.add_request(request).await;
+
+    // Register in session_map so PostToolUse can auto-resolve if Claude Code
+    // approves the permission in the terminal before our hook responds.
+    let session_key = (event.session_id.clone(), tool_name.clone());
+    session_map.lock().await.insert(session_key.clone(), request_id.clone());
+
     let reply = match rx.recv().await {
         Some(resp) => match Decision::try_from(resp.decision) {
             Ok(Decision::Approved) => { info!("Approved: {}", request_id); PERM_ALLOW }
@@ -237,6 +273,9 @@ async fn handle_permission_request(
         },
         None => PERM_DENY,
     };
+
+    // Remove from session_map (no-op if PostToolUse already cleared it).
+    session_map.lock().await.remove(&session_key);
 
     stream.write_all(reply).await?;
     stream.shutdown().await?;
