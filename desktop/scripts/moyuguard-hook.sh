@@ -76,7 +76,7 @@ except Exception:
 }
 
 case "$EVENT_NAME" in
-  PermissionRequest|PreToolUse)
+  PermissionRequest)
     RESPONSE=$(unix_rpc)
     rm -f "$TMPFILE"
     if [ -n "$RESPONSE" ]; then

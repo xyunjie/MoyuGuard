@@ -67,17 +67,14 @@ pub fn install_claude_code() -> Result<String, String> {
     let hook_obj = hooks.as_object_mut()
         .ok_or("hooks is not an object")?;
 
-    // PermissionRequest: the live-reloadable blocking hook — catches every
-    // Bash call even in pre-existing Claude Code sessions.
-    // PreToolUse: fires before every tool use; catches Edit/Write that Claude
-    // Code auto-approves internally (so PermissionRequest never fires for them).
-    // Both need the same 24-hour timeout to wait for user decision.
-    let blocking_events = vec![
-        ("PermissionRequest", 86400u32),
-        ("PreToolUse",        86400u32),
-    ];
+    // PermissionRequest is the only blocking hook — Claude Code re-reads it
+    // live, so it works even in already-running sessions.
+    // All other events are fire-and-forget (async telemetry only), matching
+    // CodeIsland's routing model.
+    let blocking_events = vec![("PermissionRequest", 86400u32)];
     let fire_and_forget_events = vec![
-        ("PostToolUse", 5u32),
+        ("PreToolUse", 5u32),
+        ("PostToolUse", 5),
         ("Notification", 5),
         ("Stop", 5),
         ("SessionStart", 5),
@@ -133,7 +130,7 @@ pub fn install_codex() -> Result<String, String> {
 
     let codex_events: &[(&str, u32)] = &[
         ("PermissionRequest", 86400),
-        ("PreToolUse",        86400),
+        ("PreToolUse", 5),
         ("PostToolUse", 5),
         ("Notification", 5),
         ("Stop", 5),
