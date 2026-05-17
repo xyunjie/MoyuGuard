@@ -10,7 +10,6 @@ import WidgetKit
 struct MoyuGuardWidgetBundle: WidgetBundle {
     var body: some Widget {
         MoyuGuardWidget()
-        MoyuGuardWidgetControl()
         MoyuGuardWidgetLiveActivity()
     }
 }

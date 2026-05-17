@@ -4,17 +4,13 @@
 //
 
 import ActivityKit
+import AppIntents
+import MoyuGuardShared
 import SwiftUI
 import WidgetKit
 
-// Must match the definition in LiveActivityManager.swift (Runner target)
-struct MoyuGuardActivityAttributes: ActivityAttributes {
-    public struct ContentState: Codable, Hashable {
-        var pendingCount: Int
-        var latestSummary: String
-        var latestRisk: String
-    }
-}
+// MoyuGuardActivityAttributes comes from MoyuGuardShared package.
+// Same module = same Swift type = ActivityKit can match correctly.
 
 // ── Risk helpers ─────────────────────────────────────────────────────────────
 
@@ -42,27 +38,74 @@ private extension MoyuGuardActivityAttributes.ContentState {
 struct MoyuGuardWidgetLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MoyuGuardActivityAttributes.self) { context in
-            // Lock screen / notification banner
-            HStack(spacing: 12) {
-                Text("🐟")
-                    .font(.title2)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(context.state.pendingCount) 个待审批")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(context.state.latestSummary)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            // Lock screen / notification banner — with approve/reject buttons
+            let rid = context.state.latestRequestId
+            VStack(spacing: 10) {
+                HStack(spacing: 12) {
+                    Text("🐟").font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(context.state.pendingCount) 个待审批")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text(context.state.latestSummary)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text(context.state.riskLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(context.state.riskColor.opacity(0.2))
+                        .foregroundStyle(context.state.riskColor)
+                        .clipShape(Capsule())
                 }
-                Spacer()
-                Text(context.state.riskLabel)
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(context.state.riskColor.opacity(0.2))
-                    .foregroundStyle(context.state.riskColor)
-                    .clipShape(Capsule())
+                if !rid.isEmpty {
+                    HStack(spacing: 12) {
+                        if #available(iOS 17.0, *) {
+                            Button(intent: RejectIntent(requestId: rid)) {
+                                Label("拒绝", systemImage: "xmark")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(.red.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                            Button(intent: ApproveIntent(requestId: rid)) {
+                                Label("允许", systemImage: "checkmark")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.green)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(.green.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Link(destination: URL(string: "moyuguard://reject/\(rid)")!) {
+                                Label("拒绝", systemImage: "xmark")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(.red.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            Link(destination: URL(string: "moyuguard://approve/\(rid)")!) {
+                                Label("允许", systemImage: "checkmark")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.green)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(.green.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                        }
+                    }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

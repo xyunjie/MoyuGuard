@@ -57,6 +57,7 @@ class ConnectionService extends ChangeNotifier {
 
       _startHeartbeat();
       _listenMessages();
+      _setupLiveActivityActionHandler();
 
       final deviceId = await _getDeviceId();
       _channel?.sink.add(jsonEncode({
@@ -151,6 +152,19 @@ class ConnectionService extends ChangeNotifier {
     _updateLiveActivity();
   }
 
+  void _setupLiveActivityActionHandler() {
+    if (!_supportsLiveActivity) return;
+    _liveActivityChannel.setMethodCallHandler((call) async {
+      if (call.method == 'handleAction') {
+        final args = call.arguments as Map;
+        final action = args['action'] as String;
+        final requestId = args['requestId'] as String;
+        final decision = action == 'approve' ? Decision.approved : Decision.rejected;
+        sendDecision(requestId, decision);
+      }
+    });
+  }
+
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -175,19 +189,37 @@ class ConnectionService extends ChangeNotifier {
 
   void _updateLiveActivity() {
     if (!_supportsLiveActivity) return;
-    if (_pendingRequests.isEmpty) {
-      _liveActivityChannel.invokeMethod('end').catchError((_) {});
-      return;
-    }
-    final latest = _pendingRequests.last;
-    final args = {
-      'pendingCount': _pendingRequests.length,
-      'summary': latest.summary,
-      'risk': latest.riskLevel.name,
-    };
-    _liveActivityChannel
-        .invokeMethod('update', args)
-        .catchError((_) => _liveActivityChannel.invokeMethod('start', args).catchError((_) {}));
+    debugPrint('[LiveActivity] updating, pending=${_pendingRequests.length}');
+
+    // Keep activity alive even when pending=0 so background updates work.
+    // Only end() when disconnecting (called in _disconnect).
+    final args = _pendingRequests.isEmpty
+        ? {'pendingCount': 0, 'summary': '一切安全，放心摸鱼', 'risk': 'low', 'requestId': ''}
+        : {
+            'pendingCount': _pendingRequests.length,
+            'summary': _pendingRequests.last.summary,
+            'risk': _pendingRequests.last.riskLevel.name,
+            'requestId': _pendingRequests.last.requestId,
+          };
+
+    _liveActivityChannel.invokeMethod('update', args).then((_) {
+      debugPrint('[LiveActivity] update OK');
+    }).catchError((e) {
+      final msg = e.toString();
+      if (msg.contains('visibility')) {
+        // ActivityKit: cannot START from background — normal behavior.
+        debugPrint('[LiveActivity] cannot start from background (OK)');
+        return;
+      }
+      debugPrint('[LiveActivity] update/start error: $e');
+      _liveActivityChannel.invokeMethod('start', args).then((_) {
+        debugPrint('[LiveActivity] start OK');
+      }).catchError((e2) {
+        if (!e2.toString().contains('visibility')) {
+          debugPrint('[LiveActivity] start error: $e2');
+        }
+      });
+    });
   }
 
   void disconnect() {
