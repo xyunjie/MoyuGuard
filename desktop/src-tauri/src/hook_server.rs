@@ -4,26 +4,16 @@ use std::sync::Arc;
 use log::{info, warn, error};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
+use tokio::sync::RwLock;
 
 use crate::auth::AuthManager;
+use crate::config::AppConfig;
 use crate::proto::proto::*;
 use crate::ws_server::WsServer;
 
-/// Claude Code internal tools that never need user approval.
-/// Mirrors CodeIsland's allAutoApproveTools list.
-fn auto_approve_tools() -> HashSet<&'static str> {
-    [
-        // Claude Code task management
-        "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop",
-        // Todo
-        "TodoRead", "TodoWrite",
-        // Plan mode
-        "EnterPlanMode", "ExitPlanMode",
-        // Read-only operations (Claude Code rarely fires PermissionRequest for
-        // these, but auto-approve as a safety net)
-        "Read", "Glob", "Grep", "WebSearch", "WebFetch",
-    ]
-    .into()
+/// Always auto-approve pure read-only ops regardless of user config.
+fn builtin_auto_approve(tool: &str) -> bool {
+    matches!(tool, "Read" | "Glob" | "Grep" | "WebSearch" | "WebFetch")
 }
 
 const PERM_ALLOW: &[u8] = br#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#;
@@ -58,6 +48,7 @@ impl HookServer {
         auth_manager: Arc<AuthManager>,
         ws_server: Arc<WsServer>,
         app_handle: tauri::AppHandle,
+        config: Arc<RwLock<AppConfig>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = std::fs::remove_file(&self.socket_path);
 
@@ -78,8 +69,9 @@ impl HookServer {
                         let am = auth_manager.clone();
                         let ws = ws_server.clone();
                         let app = app_handle.clone();
+                        let cfg = config.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, am, ws, app).await {
+                            if let Err(e) = handle_connection(stream, am, ws, app, cfg).await {
                                 warn!("Hook connection error: {}", e);
                             }
                         });
@@ -104,6 +96,7 @@ async fn handle_connection(
     auth_manager: Arc<AuthManager>,
     ws_server: Arc<WsServer>,
     app_handle: tauri::AppHandle,
+    config: Arc<RwLock<AppConfig>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut buf = Vec::with_capacity(65536);
     let mut tmp = [0u8; 65536];
@@ -123,10 +116,22 @@ async fn handle_connection(
 
     info!("Hook event: {} tool={:?}", event.event_name, event.tool_name);
 
+    // cwd exclusion: silently drop events from ignored paths (e.g. claude-mem)
+    let cwd = event.raw_json.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+    if !cwd.is_empty() {
+        let patterns = config.read().await.excluded_cwd_patterns.clone();
+        if cwd_matches_patterns(cwd, &patterns) {
+            info!("Hook event dropped (excluded cwd): {}", cwd);
+            stream.write_all(b"{}").await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
+
     // CodeIsland routing: only PermissionRequest blocks; everything else is
     // fire-and-forget (emit telemetry to UI and return {} immediately).
     if event.event_name == "PermissionRequest" {
-        handle_permission_request(stream, event, auth_manager, ws_server, app_handle).await?;
+        handle_permission_request(stream, event, auth_manager, ws_server, app_handle, config).await?;
     } else {
         notify_event(&event, &app_handle);
         stream.write_all(b"{}").await?;
@@ -142,14 +147,15 @@ async fn handle_permission_request(
     auth_manager: Arc<AuthManager>,
     ws_server: Arc<WsServer>,
     app_handle: tauri::AppHandle,
+    config: Arc<RwLock<AppConfig>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tool_name = event.tool_name.clone().unwrap_or_default();
     let tool_input = event.tool_input.clone().unwrap_or(serde_json::json!({}));
 
-    // Auto-approve Claude Code internal / read-only tools — same list as
-    // CodeIsland's allAutoApproveTools plus common read-only operations.
-    if auto_approve_tools().contains(tool_name.as_str()) {
-        info!("Auto-approving internal tool: {}", tool_name);
+    // Check user-configured auto-approve list (+ always-on read-only builtins).
+    let user_auto_approve: HashSet<String> = config.read().await.auto_approve_tools.iter().cloned().collect();
+    if builtin_auto_approve(&tool_name) || user_auto_approve.contains(&tool_name) {
+        info!("Auto-approving tool: {}", tool_name);
         stream.write_all(PERM_ALLOW).await?;
         stream.shutdown().await?;
         return Ok(());
@@ -365,4 +371,13 @@ fn notify_event(event: &HookEvent, app_handle: &tauri::AppHandle) {
         "tool_name":  event.tool_name,
         "session_id": event.session_id,
     }));
+}
+
+/// Returns true if `cwd` contains any non-empty pattern from a comma-separated list.
+fn cwd_matches_patterns(cwd: &str, patterns_csv: &str) -> bool {
+    if patterns_csv.is_empty() { return false; }
+    patterns_csv.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .any(|p| cwd.contains(p))
 }

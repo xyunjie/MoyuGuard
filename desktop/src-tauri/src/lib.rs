@@ -355,6 +355,8 @@ async fn get_app_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, 
 async fn save_app_config(config: AppConfig, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut cfg = state.config.write().await;
     cfg.ws_port = config.ws_port;
+    cfg.auto_approve_tools = config.auto_approve_tools;
+    cfg.excluded_cwd_patterns = config.excluded_cwd_patterns;
     cfg.save()
 }
 
@@ -477,7 +479,7 @@ pub fn run() {
 
                 let hook_server = HookServer::new();
                 info!("Hook socket path: {}", hook_server.socket_path());
-                if let Err(e) = hook_server.start(am.clone(), ws.clone(), app_handle.clone()).await {
+                if let Err(e) = hook_server.start(am.clone(), ws.clone(), app_handle.clone(), config.clone()).await {
                     log::error!("Failed to start hook server: {}", e);
                 }
 
