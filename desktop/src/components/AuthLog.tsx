@@ -42,6 +42,7 @@ function formatTime(ms: number): string {
 
 function AuthLog() {
   const [logs, setLogs] = useState<BackendLogEntry[]>([]);
+  const [confirmingClear, setConfirmingClear] = useState(false);
 
   useEffect(() => {
     const refresh = async () => {
@@ -64,12 +65,13 @@ function AuthLog() {
   }, []);
 
   const handleClear = async () => {
-    if (!confirm("清空所有授权日志？此操作不可恢复。")) return;
     try {
       await invoke("clear_log");
       setLogs([]);
     } catch (e) {
       console.error("Failed to clear:", e);
+    } finally {
+      setConfirmingClear(false);
     }
   };
 
@@ -82,10 +84,20 @@ function AuthLog() {
           {logs.length > 0 && <span className="log-count">{logs.length}</span>}
         </h2>
         {logs.length > 0 && (
-          <button className="btn-mock" onClick={handleClear} aria-label="清空日志">
-            <TrashIcon size={13} />
-            清空
-          </button>
+          <div className="log-clear-area">
+            {confirmingClear ? (
+              <span className="log-clear-confirm">
+                <span className="log-clear-confirm-text">确认清空？</span>
+                <button className="btn-mock btn-danger" onClick={handleClear}>确认</button>
+                <button className="btn-mock" onClick={() => setConfirmingClear(false)}>取消</button>
+              </span>
+            ) : (
+              <button className="btn-mock" onClick={() => setConfirmingClear(true)} aria-label="清空日志">
+                <TrashIcon size={13} />
+                清空
+              </button>
+            )}
+          </div>
         )}
       </div>
 

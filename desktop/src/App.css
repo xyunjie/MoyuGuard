@@ -777,6 +777,27 @@ button {
   margin-bottom: var(--space-4);
 }
 
+.log-clear-area {
+  display: flex;
+  align-items: center;
+}
+
+.log-clear-confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.log-clear-confirm-text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.btn-danger {
+  color: var(--danger) !important;
+  border-color: var(--danger) !important;
+}
+
 .auth-log h2 {
   font-size: var(--text-md);
   font-weight: 600;
