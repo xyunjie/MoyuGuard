@@ -1,11 +1,19 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use log::{info, warn, error};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::auth::AuthManager;
 use crate::proto::proto::*;
 use crate::ws_server::WsServer;
+
+// How long a PreToolUse approval shields the matching PermissionRequest
+// from triggering a second mobile prompt.
+const DEDUP_TTL: Duration = Duration::from_secs(30);
 
 pub struct HookEvent {
     pub event_name: String,
@@ -49,7 +57,11 @@ impl HookServer {
 
         info!("Hook server listening on {}", self.socket_path);
 
-        let _socket_path = self.socket_path.clone();
+        // Tracks operations approved via PreToolUse so the matching
+        // PermissionRequest can be auto-approved without a second prompt.
+        let pre_approved: Arc<TokioMutex<HashMap<String, Instant>>> =
+            Arc::new(TokioMutex::new(HashMap::new()));
+
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
@@ -57,8 +69,9 @@ impl HookServer {
                         let am = auth_manager.clone();
                         let ws = ws_server.clone();
                         let app = app_handle.clone();
+                        let pa = pre_approved.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, am, ws, app).await {
+                            if let Err(e) = handle_connection(stream, am, ws, app, pa).await {
                                 warn!("Hook connection error: {}", e);
                             }
                         });
@@ -85,6 +98,7 @@ async fn handle_connection(
     auth_manager: Arc<AuthManager>,
     ws_server: Arc<WsServer>,
     app_handle: tauri::AppHandle,
+    pre_approved: Arc<TokioMutex<HashMap<String, Instant>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut buf = Vec::with_capacity(65536);
     let mut tmp = [0u8; 65536];
@@ -110,18 +124,10 @@ async fn handle_connection(
 
     match event.event_name.as_str() {
         "PreToolUse" => {
-            // Telemetry only — Claude Code caches PreToolUse hooks at session
-            // start so we can't depend on this for blocking decisions. Just
-            // record it for the UI and let the call through.
-            notify_event(&event, &app_handle);
-            stream.write_all(b"{}").await?;
-            stream.shutdown().await?;
+            handle_pre_tool_use(stream, event, auth_manager, ws_server, app_handle, pre_approved).await?;
         }
         "PermissionRequest" => {
-            // The real blocking decision point — Claude Code re-reads
-            // settings.json live for this event, so even sessions started
-            // before we installed get caught.
-            handle_permission_request(stream, event, auth_manager, ws_server, app_handle).await?;
+            handle_permission_request(stream, event, auth_manager, ws_server, app_handle, pre_approved).await?;
         }
         _ => {
             notify_event(&event, &app_handle);
@@ -133,29 +139,112 @@ async fn handle_connection(
     Ok(())
 }
 
+// ── PreToolUse ────────────────────────────────────────────────────────────────
+// Fires before EVERY tool execution. We use this as the primary decision point
+// for Edit/Write/NotebookEdit and any other tool that Claude Code auto-approves
+// internally (so PermissionRequest never fires for them).
+
+async fn handle_pre_tool_use(
+    mut stream: tokio::net::UnixStream,
+    event: HookEvent,
+    auth_manager: Arc<AuthManager>,
+    ws_server: Arc<WsServer>,
+    app_handle: tauri::AppHandle,
+    pre_approved: Arc<TokioMutex<HashMap<String, Instant>>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let tool_name = event.tool_name.clone().unwrap_or_default();
+    let tool_input = event.tool_input.clone().unwrap_or(serde_json::json!({}));
+    let risk = assess_risk(&tool_name, &tool_input);
+
+    if risk == RiskLevel::Low as i32 {
+        info!("PreToolUse: low-risk tool {}, auto-approving", tool_name);
+        stream.write_all(b"{}").await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
+    let decision = request_approval(&event, &tool_name, &tool_input, risk, &auth_manager, &ws_server, &app_handle).await;
+
+    let reply: &[u8] = if decision {
+        // Approved — store in dedup cache so PermissionRequest (if it fires for
+        // the same operation, e.g. Bash) doesn't show a second mobile prompt.
+        let key = dedup_key(&event.session_id, &tool_name, &tool_input);
+        let mut cache = pre_approved.lock().await;
+        evict_expired(&mut cache);
+        cache.insert(key, Instant::now());
+        b"{}"
+    } else {
+        br#"{"decision":"block","reason":"Operation rejected on MoyuGuard"}"#
+    };
+
+    stream.write_all(reply).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+// ── PermissionRequest ─────────────────────────────────────────────────────────
+// Fires when Claude Code would normally show an interactive permission dialog.
+// This is the only hook Claude Code re-reads live (without restarting the
+// session), so it catches Bash commands even in pre-existing sessions.
+
 async fn handle_permission_request(
     mut stream: tokio::net::UnixStream,
     event: HookEvent,
     auth_manager: Arc<AuthManager>,
     ws_server: Arc<WsServer>,
     app_handle: tauri::AppHandle,
+    pre_approved: Arc<TokioMutex<HashMap<String, Instant>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tool_name = event.tool_name.clone().unwrap_or_default();
     let tool_input = event.tool_input.clone().unwrap_or(serde_json::json!({}));
 
-    let risk_level = assess_risk(&tool_name, &tool_input);
+    // If PreToolUse already got a decision, don't ask the user again.
+    {
+        let key = dedup_key(&event.session_id, &tool_name, &tool_input);
+        let mut cache = pre_approved.lock().await;
+        evict_expired(&mut cache);
+        if cache.remove(&key).is_some() {
+            info!("PermissionRequest auto-approved (already decided via PreToolUse): {}", tool_name);
+            stream.write_all(PERM_ALLOW).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
 
-    if risk_level == RiskLevel::Low as i32 {
-        info!("Low risk tool {}, auto-approving", tool_name);
-        stream.write_all(b"{}").await?;
+    let risk = assess_risk(&tool_name, &tool_input);
+
+    if risk == RiskLevel::Low as i32 {
+        stream.write_all(PERM_ALLOW).await?;
         stream.shutdown().await?;
         return Ok(());
     }
 
-    let summary = build_summary(&tool_name, &tool_input);
-    let files = extract_files(&tool_name, &tool_input);
-    let raw_command = extract_command(&tool_name, &tool_input);
-    let operation = classify_operation(&tool_name);
+    let approved = request_approval(&event, &tool_name, &tool_input, risk, &auth_manager, &ws_server, &app_handle).await;
+
+    let reply = if approved { PERM_ALLOW } else { PERM_DENY };
+    stream.write_all(reply).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+const PERM_ALLOW: &[u8] = br#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#;
+const PERM_DENY:  &[u8] = br#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#;
+
+// ── Shared approval flow ──────────────────────────────────────────────────────
+
+async fn request_approval(
+    event: &HookEvent,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    risk_level: i32,
+    auth_manager: &Arc<AuthManager>,
+    ws_server: &Arc<WsServer>,
+    app_handle: &tauri::AppHandle,
+) -> bool {
+    let summary    = build_summary(tool_name, tool_input);
+    let files      = extract_files(tool_name, tool_input);
+    let raw_command = extract_command(tool_name, tool_input);
+    let operation  = classify_operation(tool_name);
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let request = AuthorizationRequest {
@@ -163,9 +252,9 @@ async fn handle_permission_request(
         tool_name: format!("claude_code:{}", tool_name),
         operation,
         risk_level,
-        summary,
-        files,
-        raw_command,
+        summary: summary.clone(),
+        files: files.clone(),
+        raw_command: raw_command.clone(),
         timeout_seconds: 3600,
     };
 
@@ -181,17 +270,18 @@ async fn handle_permission_request(
     let files_json: Vec<serde_json::Value> = request.files.iter().map(|f| serde_json::json!({
         "path": f.path,
         "change_type": match ChangeType::try_from(f.change_type) {
-            Ok(ChangeType::Created) => "created",
+            Ok(ChangeType::Created)  => "created",
             Ok(ChangeType::Modified) => "modified",
-            Ok(ChangeType::Deleted) => "deleted",
-            Ok(ChangeType::Renamed) => "renamed",
-            _ => "unknown",
+            Ok(ChangeType::Deleted)  => "deleted",
+            Ok(ChangeType::Renamed)  => "renamed",
+            _                        => "unknown",
         },
         "diff": f.diff,
         "additions": f.additions,
         "deletions": f.deletions,
     })).collect();
-    let ui_event = serde_json::json!({
+
+    let _ = app_handle.emit("auth-request", serde_json::json!({
         "request_id": request.request_id,
         "tool_name": request.tool_name,
         "operation": operation_name_str(request.operation),
@@ -201,72 +291,40 @@ async fn handle_permission_request(
         "files": files_json,
         "raw_command": request.raw_command,
         "timeout_seconds": request.timeout_seconds,
-    });
-    let _ = app_handle.emit("auth-request", &ui_event);
+    }));
 
-    // Fire a native OS notification so the user sees a new request even
-    // when the main window is hidden in the tray.
     use tauri_plugin_notification::NotificationExt;
-    let risk_emoji = match risk_name_str(request.risk_level) {
+    let risk_emoji = match risk_name_str(risk_level) {
         "critical" => "🚨",
-        "high" => "⚠️",
-        "medium" => "🔔",
-        _ => "📥",
+        "high"     => "⚠️",
+        "medium"   => "🔔",
+        _          => "📥",
     };
     let _ = app_handle
         .notification()
         .builder()
-        .title(format!("{} 待审批: {}", risk_emoji, request.tool_name))
-        .body(&request.summary)
+        .title(format!("{} 待审批: {}", risk_emoji, tool_name))
+        .body(&summary)
         .show();
 
     let mut rx = auth_manager.add_request(request).await;
-
-    let response = rx.recv().await;
-
-    let reply = match response {
+    match rx.recv().await {
         Some(resp) => {
-            let decision = Decision::try_from(resp.decision).unwrap_or(Decision::Unspecified);
-            match decision {
-                Decision::Approved => {
-                    info!("PermissionRequest approved: {}", request_id);
-                    serde_json::json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": "PermissionRequest",
-                            "decision": { "behavior": "allow" }
-                        }
-                    })
-                }
-                Decision::Rejected | Decision::Timeout => {
-                    info!("PermissionRequest denied/timeout: {}", request_id);
-                    serde_json::json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": "PermissionRequest",
-                            "decision": { "behavior": "deny" }
-                        }
-                    })
-                }
-                _ => serde_json::json!({
-                    "hookSpecificOutput": {
-                        "hookEventName": "PermissionRequest",
-                        "decision": { "behavior": "deny" }
-                    }
-                })
-            }
+            matches!(Decision::try_from(resp.decision), Ok(Decision::Approved))
         }
-        None => serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PermissionRequest",
-                "decision": { "behavior": "deny" }
-            }
-        }),
-    };
+        None => false, // channel closed / timeout → deny for safety
+    }
+}
 
-    let reply_bytes = serde_json::to_vec(&reply)?;
-    stream.write_all(&reply_bytes).await?;
-    stream.shutdown().await?;
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-    Ok(())
+fn dedup_key(session_id: &str, tool_name: &str, tool_input: &serde_json::Value) -> String {
+    format!("{}:{}:{}", session_id, tool_name, tool_input)
+}
+
+fn evict_expired(cache: &mut HashMap<String, Instant>) {
+    let now = Instant::now();
+    cache.retain(|_, ts| now.duration_since(*ts) < DEDUP_TTL);
 }
 
 fn parse_hook_event(json: &serde_json::Value) -> HookEvent {
@@ -292,12 +350,12 @@ fn assess_risk(tool_name: &str, tool_input: &serde_json::Value) -> i32 {
         }
         "Bash" => {
             let cmd = tool_input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let dangerous_patterns = [
+            let dangerous = [
                 "rm -rf", "rm -r", "sudo ", "chmod 777", "push --force",
                 "reset --hard", "DROP TABLE", "DELETE FROM", "> /dev/",
                 "mkfs", "dd if=", ":(){ :|:& };:",
             ];
-            if dangerous_patterns.iter().any(|p| cmd.contains(p)) {
+            if dangerous.iter().any(|p| cmd.contains(p)) {
                 RiskLevel::Critical.into()
             } else {
                 RiskLevel::High.into()
@@ -378,38 +436,37 @@ fn extract_command(tool_name: &str, tool_input: &serde_json::Value) -> String {
 
 fn classify_operation(tool_name: &str) -> i32 {
     match tool_name {
-        "Bash" => OperationType::ShellExecute.into(),
-        "Edit" | "NotebookEdit" => OperationType::FileWrite.into(),
-        "Write" => OperationType::FileWrite.into(),
+        "Bash"        => OperationType::ShellExecute.into(),
+        "Edit" | "NotebookEdit" | "Write" => OperationType::FileWrite.into(),
         _ => OperationType::OperationUnspecified.into(),
     }
 }
 
 fn operation_name_str(op: i32) -> &'static str {
     match OperationType::try_from(op) {
-        Ok(OperationType::FileWrite) => "file_write",
-        Ok(OperationType::FileDelete) => "file_delete",
-        Ok(OperationType::ShellExecute) => "shell_execute",
-        Ok(OperationType::GitPush) => "git_push",
+        Ok(OperationType::FileWrite)      => "file_write",
+        Ok(OperationType::FileDelete)     => "file_delete",
+        Ok(OperationType::ShellExecute)   => "shell_execute",
+        Ok(OperationType::GitPush)        => "git_push",
         Ok(OperationType::PackageInstall) => "package_install",
-        Ok(OperationType::ConfigModify) => "config_modify",
-        _ => "unknown",
+        Ok(OperationType::ConfigModify)   => "config_modify",
+        _                                 => "unknown",
     }
 }
 
 fn risk_name_str(level: i32) -> &'static str {
     match RiskLevel::try_from(level) {
-        Ok(RiskLevel::Low) => "low",
-        Ok(RiskLevel::Medium) => "medium",
-        Ok(RiskLevel::High) => "high",
+        Ok(RiskLevel::Low)      => "low",
+        Ok(RiskLevel::Medium)   => "medium",
+        Ok(RiskLevel::High)     => "high",
         Ok(RiskLevel::Critical) => "critical",
-        _ => "unknown",
+        _                       => "unknown",
     }
 }
 
 fn notify_event(event: &HookEvent, app_handle: &tauri::AppHandle) {
     use tauri::Emitter;
-    let _ = app_handle.emit("hook-event", &serde_json::json!({
+    let _ = app_handle.emit("hook-event", serde_json::json!({
         "event_name": event.event_name,
         "tool_name": event.tool_name,
         "session_id": event.session_id,
