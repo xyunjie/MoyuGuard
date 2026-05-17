@@ -1,38 +1,84 @@
 #!/bin/bash
-# MoyuGuard Hook Script v2
+# MoyuGuard Hook Script v3
 # Reads CLI hook stdin JSON, sends to MoyuGuard desktop via Unix Socket.
-# Blocks on PermissionRequest (Claude Code re-reads settings.json for this
-# event live, so it works in already-running sessions) and forwards the
-# desktop's response to the CLI tool. All other events are fire-and-forget.
+# Blocks on PermissionRequest and forwards the desktop's response.
+# All other events are fire-and-forget.
 
 SOCKET_PATH="/tmp/moyuguard-$(id -u).sock"
 
-INPUT=$(cat)
+# Read stdin into a temp file to avoid shell quoting issues.
+TMPFILE=$(mktemp /tmp/moyuguard-hook-XXXXXX.json)
+cat > "$TMPFILE"
 
-if [ -z "$INPUT" ]; then
+if [ ! -s "$TMPFILE" ]; then
+  rm -f "$TMPFILE"
   echo '{}'
   exit 0
 fi
 
 if [ ! -S "$SOCKET_PATH" ]; then
+  rm -f "$TMPFILE"
   echo '{}'
   exit 0
 fi
 
-EVENT_NAME=$(echo "$INPUT" | python3 -c "
+# Extract event name — Claude Code sends "hook_event_name"; others send "event_name".
+EVENT_NAME=$(python3 -c "
 import sys, json
 try:
-    d = json.load(sys.stdin)
-    print(d.get('event_name') or d.get('hook_event_name') or '')
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    print(d.get('hook_event_name') or d.get('event_name') or '')
 except Exception:
     print('')
-" 2>/dev/null)
+" "$TMPFILE" 2>/dev/null)
+
+# Send payload to socket; shutdown write end so server sees EOF, then read response.
+unix_rpc() {
+    python3 -c "
+import socket, sys
+try:
+    with open(sys.argv[1], 'rb') as f:
+        payload = f.read()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(86400)
+        s.connect(sys.argv[2])
+        s.sendall(payload)
+        s.shutdown(socket.SHUT_WR)
+        chunks = []
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        sys.stdout.buffer.write(b''.join(chunks))
+except Exception as e:
+    sys.stderr.write(str(e) + '\n')
+" "$TMPFILE" "$SOCKET_PATH"
+}
+
+# Fire-and-forget version (timeout 2s, runs in background).
+unix_send() {
+    python3 -c "
+import socket, sys
+try:
+    with open(sys.argv[1], 'rb') as f:
+        payload = f.read()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(2)
+        s.connect(sys.argv[2])
+        s.sendall(payload)
+        s.shutdown(socket.SHUT_WR)
+        s.recv(1024)
+except Exception:
+    pass
+" "$TMPFILE" "$SOCKET_PATH" &
+}
 
 case "$EVENT_NAME" in
   PermissionRequest)
-    # Wait up to 24h for user decision. The desktop responds with the
-    # Claude Code-specific permission shape: hookSpecificOutput.decision.behavior
-    RESPONSE=$(echo "$INPUT" | nc -U -w 86400 "$SOCKET_PATH" 2>/dev/null)
+    RESPONSE=$(unix_rpc)
+    rm -f "$TMPFILE"
     if [ -n "$RESPONSE" ]; then
       echo "$RESPONSE"
     else
@@ -40,7 +86,8 @@ case "$EVENT_NAME" in
     fi
     ;;
   *)
-    (echo "$INPUT" | nc -U -w 2 "$SOCKET_PATH" >/dev/null 2>&1) &
+    unix_send
+    rm -f "$TMPFILE"
     echo '{}'
     ;;
 esac

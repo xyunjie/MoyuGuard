@@ -97,7 +97,6 @@ async fn handle_connection(
             warn!("Hook payload too large, dropping");
             return Ok(());
         }
-        if n < tmp.len() { break; }
     }
 
     if buf.is_empty() {
@@ -271,8 +270,14 @@ async fn handle_permission_request(
 }
 
 fn parse_hook_event(json: &serde_json::Value) -> HookEvent {
+    // Claude Code sends "hook_event_name"; Codex/others may send "event_name".
+    let event_name = json.get("hook_event_name")
+        .or_else(|| json.get("event_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     HookEvent {
-        event_name: json.get("event_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        event_name,
         session_id: json.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         tool_name: json.get("tool_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
         tool_input: json.get("tool_input").cloned(),
