@@ -57,8 +57,20 @@ impl HookServer {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = std::fs::remove_file(&self.socket_path);
 
-        let listener = UnixListener::bind(&self.socket_path)?;
+        // Set a restrictive umask before bind so the socket file is created
+        // with 0o600 permissions atomically, closing the TOCTOU window that
+        // exists when bind() and set_permissions() are separate calls.
+        #[cfg(unix)]
+        let old_umask = unsafe { libc::umask(0o177) };
 
+        let listener = UnixListener::bind(&self.socket_path);
+
+        #[cfg(unix)]
+        unsafe { libc::umask(old_umask) };
+
+        let listener = listener?;
+
+        // Belt-and-suspenders: also chmod in case umask was overridden.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -259,12 +271,12 @@ async fn handle_permission_request(
         .body(&summary)
         .show();
 
-    let mut rx = auth_manager.add_request(request).await;
-
-    // Register in session_map so PostToolUse can auto-resolve if Claude Code
-    // approves the permission in the terminal before our hook responds.
+    // Register in session_map BEFORE add_request so any PostToolUse arriving
+    // concurrently (Claude Code approved in terminal) can always find the key.
     let session_key = (event.session_id.clone(), tool_name.clone());
     session_map.lock().await.insert(session_key.clone(), request_id.clone());
+
+    let mut rx = auth_manager.add_request(request).await;
 
     let reply = match rx.recv().await {
         Some(resp) => match Decision::try_from(resp.decision) {
@@ -274,7 +286,9 @@ async fn handle_permission_request(
         None => PERM_DENY,
     };
 
-    // Remove from session_map (no-op if PostToolUse already cleared it).
+    // Remove from session_map. If PostToolUse already removed it and called
+    // resolve(), auth_manager.resolve() in that path returns None (idempotent),
+    // so no double-broadcast can occur.
     session_map.lock().await.remove(&session_key);
 
     stream.write_all(reply).await?;
@@ -327,7 +341,9 @@ fn build_summary(tool_name: &str, tool_input: &serde_json::Value) -> String {
     match tool_name {
         "Bash"  => {
             let cmd = tool_input.get("command").and_then(|v| v.as_str()).unwrap_or("(unknown)");
-            format!("执行命令: {}", if cmd.len() > 100 { &cmd[..100] } else { cmd })
+            let truncated: String = cmd.chars().take(100).collect();
+            let suffix = if cmd.chars().count() > 100 { "…" } else { "" };
+            format!("执行命令: {}{}", truncated, suffix)
         }
         "Edit"  => format!("编辑文件: {}", tool_input.get("file_path").and_then(|v| v.as_str()).unwrap_or("(unknown)")),
         "Write" => format!("写入文件: {}", tool_input.get("file_path").and_then(|v| v.as_str()).unwrap_or("(unknown)")),

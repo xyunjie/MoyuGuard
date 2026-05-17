@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/auth_request.dart';
 
-enum PairState { idle, waiting, rejected }
+enum PairState { paired, waiting, rejected }
 
 const _liveActivityChannel = MethodChannel('moyuguard/live_activity');
 
@@ -19,7 +19,7 @@ class ConnectionService extends ChangeNotifier {
   String? _serverAddress;
   String? _computerName;
   bool _isConnected = false;
-  PairState _pairState = PairState.idle;
+  PairState _pairState = PairState.paired;
   final List<AuthRequest> _pendingRequests = [];
   final List<String> _log = [];
   Timer? _heartbeatTimer;
@@ -71,7 +71,7 @@ class ConnectionService extends ChangeNotifier {
     } catch (e) {
       _addLog('连接失败: $e');
       _isConnected = false;
-      _pairState = PairState.idle;
+      _pairState = PairState.paired;
       notifyListeners();
     }
   }
@@ -100,7 +100,9 @@ class ConnectionService extends ChangeNotifier {
       final type = msg['type'] as String?;
 
       if (type == 'auth_request') {
-        if (_pairState != PairState.idle) return; // only trusted clients reach here
+        // Only handle auth requests when successfully paired (not while waiting
+        // for pair confirmation or after rejection).
+        if (_pairState != PairState.paired) return;
         final req = AuthRequest(
           requestId: msg['request_id'] ?? '',
           toolName: msg['tool_name'] ?? 'unknown',
@@ -133,7 +135,7 @@ class ConnectionService extends ChangeNotifier {
         final accepted = msg['accepted'] as bool? ?? false;
         if (accepted) {
           _computerName = msg['computer_name'];
-          _pairState = PairState.idle;
+          _pairState = PairState.paired;
           _addLog('配对成功: $_computerName');
         } else {
           _pairState = PairState.rejected;
@@ -188,7 +190,7 @@ class ConnectionService extends ChangeNotifier {
     _channel?.sink.close();
     _channel = null;
     _isConnected = false;
-    _pairState = PairState.idle;
+    _pairState = PairState.paired;
     _serverAddress = null;
     _computerName = null;
     _pendingRequests.clear();

@@ -6,6 +6,15 @@
 
 SOCKET_PATH="/tmp/moyuguard-$(id -u).sock"
 
+# Guard: python3 is required for Unix socket communication.
+# If absent, fail open (return {}) rather than silently blocking Claude Code,
+# but emit a visible warning so the user knows interception is disabled.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "moyuguard-hook: python3 not found — hook interception disabled" >&2
+  echo '{}'
+  exit 0
+fi
+
 # Read stdin into a temp file to avoid shell quoting issues.
 TMPFILE=$(mktemp /tmp/moyuguard-hook-XXXXXX.json)
 cat > "$TMPFILE"

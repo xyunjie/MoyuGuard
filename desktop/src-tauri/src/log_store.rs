@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 
 const MAX_ENTRIES: usize = 500;
 
@@ -25,7 +25,9 @@ struct LogFile {
 
 pub struct LogStore {
     entries: RwLock<Vec<LogEntry>>,
-    path: PathBuf,
+    /// All disk writes are serialised through this channel so concurrent
+    /// append() calls never race on the same tmp file.
+    write_tx: mpsc::UnboundedSender<Vec<LogEntry>>,
 }
 
 impl LogStore {
@@ -55,57 +57,59 @@ impl LogStore {
             Vec::new()
         };
 
+        let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Vec<LogEntry>>();
+
+        // Single background task that serialises all disk writes.
+        tokio::spawn({
+            let path = path.clone();
+            async move {
+                while let Some(snapshot) = write_rx.recv().await {
+                    persist_sync(&path, snapshot);
+                }
+            }
+        });
+
         Arc::new(Self {
             entries: RwLock::new(entries),
-            path,
+            write_tx,
         })
     }
 
     pub async fn append(&self, entry: LogEntry) {
         let mut entries = self.entries.write().await;
         entries.push(entry);
-        // Trim oldest if we exceed the cap. Newest is at the end.
         let len = entries.len();
         if len > MAX_ENTRIES {
             entries.drain(0..len - MAX_ENTRIES);
         }
-        let snapshot = entries.clone();
-        drop(entries);
-        self.persist(snapshot).await;
+        let _ = self.write_tx.send(entries.clone());
     }
 
     pub async fn list(&self) -> Vec<LogEntry> {
         let entries = self.entries.read().await;
-        // Newest first for the UI
         entries.iter().rev().cloned().collect()
     }
 
     pub async fn clear(&self) {
         let mut entries = self.entries.write().await;
         entries.clear();
-        let snapshot = entries.clone();
-        drop(entries);
-        self.persist(snapshot).await;
+        let _ = self.write_tx.send(entries.clone());
     }
+}
 
-    async fn persist(&self, entries: Vec<LogEntry>) {
-        let path = self.path.clone();
-        // Run blocking IO off the async runtime
-        tokio::task::spawn_blocking(move || {
-            let file = LogFile { entries };
-            match serde_json::to_string_pretty(&file) {
-                Ok(json) => {
-                    let tmp = path.with_extension("json.tmp");
-                    if let Err(e) = std::fs::write(&tmp, &json) {
-                        warn!("Failed to write log tmp: {}", e);
-                        return;
-                    }
-                    if let Err(e) = std::fs::rename(&tmp, &path) {
-                        warn!("Failed to rename log tmp: {}", e);
-                    }
-                }
-                Err(e) => warn!("Failed to serialize log: {}", e),
+fn persist_sync(path: &PathBuf, entries: Vec<LogEntry>) {
+    let file = LogFile { entries };
+    match serde_json::to_string_pretty(&file) {
+        Ok(json) => {
+            let tmp = path.with_extension("json.tmp");
+            if let Err(e) = std::fs::write(&tmp, &json) {
+                warn!("Failed to write log tmp: {}", e);
+                return;
             }
-        });
+            if let Err(e) = std::fs::rename(&tmp, path) {
+                warn!("Failed to rename log tmp: {}", e);
+            }
+        }
+        Err(e) => warn!("Failed to serialize log: {}", e),
     }
 }

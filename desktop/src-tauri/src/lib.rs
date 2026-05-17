@@ -574,12 +574,12 @@ async fn handle_proto_message(
                     .unwrap_or(Decision::Unspecified);
                 if let Some(req) = am.resolve(&resp.request_id, decision, resp.reason.clone()).await {
                     record_log(ls, app_handle, &req, decision, &resp.reason).await;
+                    let _ = app_handle.emit("auth-resolved", &resp.request_id);
+                    ws.broadcast_json(&serde_json::json!({
+                        "type": "auth_resolved",
+                        "request_id": &resp.request_id,
+                    })).await;
                 }
-                let _ = app_handle.emit("auth-resolved", &resp.request_id);
-                ws.broadcast_json(&serde_json::json!({
-                    "type": "auth_resolved",
-                    "request_id": resp.request_id,
-                })).await;
             }
         }
         Ok(MessageType::Heartbeat) => {
@@ -638,12 +638,12 @@ async fn handle_json_message(
             info!("JSON auth response: {} -> {:?}", request_id, decision);
             if let Some(req) = am.resolve(request_id, decision, reason.clone()).await {
                 record_log(ls, app_handle, &req, decision, &reason).await;
+                let _ = app_handle.emit("auth-resolved", request_id);
+                ws.broadcast_json(&serde_json::json!({
+                    "type": "auth_resolved",
+                    "request_id": request_id,
+                })).await;
             }
-            let _ = app_handle.emit("auth-resolved", request_id);
-            ws.broadcast_json(&serde_json::json!({
-                "type": "auth_resolved",
-                "request_id": request_id,
-            })).await;
         }
         "heartbeat" => {
             info!("JSON heartbeat from {}", client_id);
