@@ -83,12 +83,12 @@ pub fn install_claude_code() -> Result<String, String> {
 
     for (event, timeout) in &blocking_events {
         let entry = make_hook_entry(&hook_cmd, *timeout);
-        hook_obj.insert(event.to_string(), entry);
+        merge_hook_entry(hook_obj, event, entry);
     }
 
     for (event, timeout) in &fire_and_forget_events {
         let entry = make_hook_entry(&hook_cmd, *timeout);
-        hook_obj.insert(event.to_string(), entry);
+        merge_hook_entry(hook_obj, event, entry);
     }
 
     let output = serde_json::to_string_pretty(&settings)
@@ -139,7 +139,7 @@ pub fn install_codex() -> Result<String, String> {
     ];
     for (event, timeout) in codex_events {
         let entry = make_codex_hook_entry(&hook_cmd, *timeout);
-        hook_obj.insert(event.to_string(), entry);
+        merge_hook_entry(hook_obj, event, entry);
     }
 
     let output = serde_json::to_string_pretty(&hooks)
@@ -336,4 +336,37 @@ fn make_codex_hook_entry(command: &str, timeout: u32) -> serde_json::Value {
             ]
         }
     ])
+}
+
+/// Append MoyuGuard hook entries to an existing event key without clobbering
+/// hooks from other tools (e.g. CodeIsland).
+///
+/// Strategy:
+///   1. Ensure the key exists as an array.
+///   2. Remove any previous MoyuGuard entries (idempotent reinstall).
+///   3. Append the new entries from `new_entries` (which is itself an array).
+fn merge_hook_entry(
+    hook_obj: &mut serde_json::Map<String, serde_json::Value>,
+    event: &str,
+    new_entries: serde_json::Value,
+) {
+    let slot = hook_obj
+        .entry(event.to_string())
+        .or_insert_with(|| serde_json::json!([]));
+
+    // If the existing value is somehow not an array, replace it wholesale.
+    if !slot.is_array() {
+        *slot = new_entries;
+        return;
+    }
+
+    let arr = slot.as_array_mut().unwrap();
+
+    // Remove old MoyuGuard entries so reinstall is idempotent.
+    arr.retain(|h| !is_moyuguard_hook(h));
+
+    // Append new entries.
+    if let Some(new_arr) = new_entries.as_array() {
+        arr.extend(new_arr.iter().cloned());
+    }
 }

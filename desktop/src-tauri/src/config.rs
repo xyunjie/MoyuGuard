@@ -29,10 +29,15 @@ fn default_ws_port() -> u16 {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TrustedClient {
-    pub device_id:   String,
-    pub device_name: String,
-    pub platform:    String,
-    pub paired_at:   i64,
+    pub device_id:     String,
+    pub device_name:   String,
+    pub platform:      String,
+    pub paired_at:     i64,
+    /// Shared secret issued during pairing. The mobile client must echo this
+    /// token on every reconnect; mismatches are treated as unknown devices and
+    /// trigger a new pairing prompt.
+    #[serde(default)]
+    pub session_token: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

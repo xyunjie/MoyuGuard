@@ -24,6 +24,7 @@ class ConnectionService extends ChangeNotifier {
   final List<String> _log = [];
   Timer? _heartbeatTimer;
   String? _deviceId;
+  String? _sessionToken;   // issued by server on first pairing, verified on reconnect
 
   bool get isConnected => _isConnected;
   PairState get pairState => _pairState;
@@ -37,11 +38,24 @@ class ConnectionService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     var id = prefs.getString('device_id');
     if (id == null) {
-      id = 'flutter-${DateTime.now().millisecondsSinceEpoch}';
+      id = 'mg-${DateTime.now().millisecondsSinceEpoch}';
       await prefs.setString('device_id', id);
     }
     _deviceId = id;
     return id;
+  }
+
+  Future<String?> _getStoredToken() async {
+    if (_sessionToken != null) return _sessionToken;
+    final prefs = await SharedPreferences.getInstance();
+    _sessionToken = prefs.getString('session_token');
+    return _sessionToken;
+  }
+
+  Future<void> _saveToken(String token) async {
+    _sessionToken = token;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('session_token', token);
   }
 
   Future<void> connect(String host, int port) async {
@@ -60,12 +74,17 @@ class ConnectionService extends ChangeNotifier {
       _setupLiveActivityActionHandler();
 
       final deviceId = await _getDeviceId();
-      _channel?.sink.add(jsonEncode({
+      final storedToken = await _getStoredToken();
+      final pairMsg = <String, dynamic>{
         'type': 'pair_request',
         'device_id': deviceId,
         'device_name': kIsWeb ? 'Flutter Web' : 'Flutter Mobile',
         'platform': kIsWeb ? 'web' : 'mobile',
-      }));
+      };
+      if (storedToken != null && storedToken.isNotEmpty) {
+        pairMsg['session_token'] = storedToken;
+      }
+      _channel?.sink.add(jsonEncode(pairMsg));
 
       _addLog('已连接到 $host:$port，等待配对确认…');
     } catch (e) {
@@ -94,7 +113,7 @@ class ConnectionService extends ChangeNotifier {
     );
   }
 
-  void _handleJsonMessage(String data) {
+  Future<void> _handleJsonMessage(String data) async {
     try {
       final msg = jsonDecode(data) as Map<String, dynamic>;
       final type = msg['type'] as String?;
@@ -136,6 +155,8 @@ class ConnectionService extends ChangeNotifier {
         if (accepted) {
           _computerName = msg['computer_name'];
           _pairState = PairState.paired;
+          final token = msg['session_token'] as String?;
+          if (token != null && token.isNotEmpty) await _saveToken(token);
           _addLog('配对成功: $_computerName');
         } else {
           _pairState = PairState.rejected;

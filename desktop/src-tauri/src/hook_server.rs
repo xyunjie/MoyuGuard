@@ -80,8 +80,13 @@ impl HookServer {
         info!("Hook server listening on {}", self.socket_path);
 
         let session_map: SessionMap = Arc::new(TokioMutex::new(HashMap::new()));
+        let socket_path = self.socket_path.clone();
 
-        tokio::spawn(async move {
+        // Spawn the accept loop and attach a watchdog. The loop is designed to
+        // run forever; if it ever terminates (panic → task abort, or a hard
+        // listener error we can't recover from), log a critical message so the
+        // issue is visible in logs rather than silently swallowed.
+        let accept_handle = tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, _)) => {
@@ -98,6 +103,21 @@ impl HookServer {
                     }
                     Err(e) => error!("Hook accept error: {}", e),
                 }
+            }
+        });
+
+        tokio::spawn(async move {
+            match accept_handle.await {
+                Ok(()) => error!(
+                    "Hook server accept loop exited unexpectedly (socket: {}). \
+                     Hook interception is now DISABLED — restart MoyuGuard to restore it.",
+                    socket_path
+                ),
+                Err(e) => error!(
+                    "Hook server accept loop panicked (socket: {}): {:?}. \
+                     Hook interception is now DISABLED — restart MoyuGuard to restore it.",
+                    socket_path, e
+                ),
             }
         });
 

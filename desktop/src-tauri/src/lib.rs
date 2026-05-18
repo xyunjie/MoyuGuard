@@ -222,19 +222,21 @@ async fn approve_pair(
     if let Some((device_id, device_name, platform)) = state.ws_server.get_client_info(&client_id).await {
         state.ws_server.set_trusted(&client_id, true).await;
 
-        // Persist to config
-        let mut cfg = state.config.write().await;
-        if !cfg.trusted_clients.iter().any(|c| c.device_id == device_id) {
-            cfg.trusted_clients.push(TrustedClient {
-                device_id: device_id.clone(),
-                device_name: device_name.clone(),
-                platform: platform.clone(),
-                paired_at: chrono::Utc::now().timestamp_millis(),
-            });
-            cfg.save().map_err(|e| e.to_string())?;
-        }
+        let session_token = uuid::Uuid::new_v4().to_string();
 
-        send_pair_accept(&client_id, &state.ws_server, &app).await;
+        let mut cfg = state.config.write().await;
+        cfg.trusted_clients.retain(|c| c.device_id != device_id);
+        cfg.trusted_clients.push(TrustedClient {
+            device_id:     device_id.clone(),
+            device_name:   device_name.clone(),
+            platform:      platform.clone(),
+            paired_at:     chrono::Utc::now().timestamp_millis(),
+            session_token: session_token.clone(),
+        });
+        cfg.save().map_err(|e| e.to_string())?;
+        drop(cfg);
+
+        send_pair_accept(&client_id, &state.ws_server, &app, session_token).await;
         info!("Pairing approved for {} ({})", device_name, device_id);
         Ok(())
     } else {
@@ -526,27 +528,41 @@ async fn handle_pair_request(
     device_id: &str,
     device_name: &str,
     platform: &str,
+    session_token: Option<&str>,   // echoed by client on reconnect
     ws: &Arc<WsServer>,
     config: &Arc<RwLock<AppConfig>>,
     app_handle: &AppHandle,
 ) {
     ws.set_client_info(client_id, device_id.to_string(), device_name.to_string(), platform.to_string()).await;
 
-    let is_known = config.read().await.trusted_clients.iter().any(|c| c.device_id == device_id);
+    let stored_token = config.read().await
+        .trusted_clients.iter()
+        .find(|c| c.device_id == device_id)
+        .map(|c| c.session_token.clone());
+
+    let is_known = match (&stored_token, session_token) {
+        // Known device with correct token → auto-accept.
+        (Some(stored), Some(provided)) if !stored.is_empty() && stored == provided => true,
+        // Known device but no token on either side (migration from old data) → auto-accept.
+        (Some(stored), None) if stored.is_empty() => true,
+        // Token mismatch or missing → treat as new device, require pairing.
+        _ => false,
+    };
 
     if is_known {
         info!("Auto-accepting known device: {} ({})", device_name, device_id);
         ws.set_trusted(client_id, true).await;
-        send_pair_accept(client_id, ws, app_handle).await;
+        // Send back the stored token so the client can confirm it is unchanged.
+        let token = stored_token.unwrap_or_default();
+        send_pair_accept(client_id, ws, app_handle, token).await;
     } else {
-        info!("Pending pair from unknown device: {} ({})", device_name, device_id);
+        info!("Pending pair from unknown/unverified device: {} ({})", device_name, device_id);
         let _ = app_handle.emit("pair-pending", PairPendingEvent {
             client_id: client_id.to_string(),
             device_name: device_name.to_string(),
             device_id: device_id.to_string(),
             platform: platform.to_string(),
         });
-        // Show window so the user sees the dialog
         if let Some(window) = app_handle.get_webview_window("main") {
             let _ = window.show();
             let _ = window.set_focus();
@@ -592,7 +608,9 @@ async fn handle_proto_message(
                 } else {
                     req.device_id.clone()
                 };
-                handle_pair_request(client_id, &device_id, &req.device_name, &req.platform, ws, config, app_handle).await;
+                // Proto PairRequest has no session_token field; token verification
+                // is only done on the JSON path (which Flutter uses).
+                handle_pair_request(client_id, &device_id, &req.device_name, &req.platform, None, ws, config, app_handle).await;
             }
         }
         _ => {}
@@ -618,7 +636,8 @@ async fn handle_json_message(
                 .filter(|s| !s.is_empty())
                 .map(String::from)
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            handle_pair_request(client_id, &device_id, device_name, platform, ws, config, app_handle).await;
+            let token = json.get("session_token").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+            handle_pair_request(client_id, &device_id, device_name, platform, token, ws, config, app_handle).await;
         }
         "auth_response" => {
             if !ws.is_trusted(client_id).await {
@@ -681,7 +700,7 @@ async fn record_log(
     let _ = app_handle.emit("log-appended", &entry);
 }
 
-async fn send_pair_accept(client_id: &str, ws: &Arc<WsServer>, app_handle: &AppHandle) {
+async fn send_pair_accept(client_id: &str, ws: &Arc<WsServer>, app_handle: &AppHandle, session_token: String) {
     let response = Envelope {
         message_id: uuid::Uuid::new_v4().to_string(),
         timestamp: chrono::Utc::now().timestamp_millis() as u64,
@@ -690,7 +709,7 @@ async fn send_pair_accept(client_id: &str, ws: &Arc<WsServer>, app_handle: &AppH
             accepted: true,
             computer_name: gethostname::gethostname().to_string_lossy().to_string(),
             computer_id: uuid::Uuid::new_v4().to_string(),
-            session_token: uuid::Uuid::new_v4().to_string(),
+            session_token,
         })),
     };
     ws.send_to(client_id, &response).await;
